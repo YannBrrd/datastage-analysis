@@ -1,0 +1,13 @@
+sentence-transformers
+anthropic
+redis
+lxml
+scikit-learn
+pandas
+numpy
+tqdm
+streamlit
+asyncio-mqtt  # if needed, but maybe not
+aiofiles
+hf_xet
+plotly
