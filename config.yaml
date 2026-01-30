@@ -6,8 +6,8 @@ parser:
   # Maximum file size before warning (in MB)
   max_file_size_mb: 510
 
-  # Maximum lines to parse per file (for very large DSX exports)
-  max_lines: 500000
+  # Maximum lines to parse per file (0 = unlimited)
+  max_lines: 0
 
   # Number of parallel workers for parsing
   max_workers: 4

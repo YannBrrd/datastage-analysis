@@ -163,9 +163,9 @@ class DSXParser:
             for line in file_obj:
                 line = line.strip()
                 line_count += 1
-                
-                # Limit parsing for huge files
-                if line_count > max_lines:
+
+                # Limit parsing for huge files (0 = unlimited)
+                if max_lines > 0 and line_count > max_lines:
                     logger.warning(f"Reached max lines ({max_lines}) for {file_path.name}, stopping parse")
                     break
                 

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 DEFAULTS = {
     'parser': {
         'max_file_size_mb': 510,
-        'max_lines': 500000,
+        'max_lines': 0,  # 0 = unlimited
         'max_workers': 4,
     },
     'prediction': {
