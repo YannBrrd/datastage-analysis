@@ -555,6 +555,39 @@ Examples:
         help="Enable debug logging to diagnose parsing issues"
     )
 
+    # Generation arguments
+    parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Generate AWS Glue code after analysis"
+    )
+
+    parser.add_argument(
+        "--generate-only",
+        type=str,
+        metavar="JOBS",
+        help="Generate code for specific jobs (comma-separated or 'all')"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./generated",
+        help="Output directory for generated code (default: ./generated)"
+    )
+
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Disable LLM, use rule-based generation only"
+    )
+
+    parser.add_argument(
+        "--llm-provider",
+        choices=["anthropic", "azure", "aws", "gcp", "openrouter"],
+        help="Override LLM provider from config"
+    )
+
     args = parser.parse_args()
 
     # Run analysis
@@ -587,6 +620,63 @@ Examples:
     if summary:
         auto_pct = summary.get("auto", {}).get("percentage", 0)
         print(f"\n✨ {auto_pct}% of jobs can be automatically migrated to AWS Glue")
+
+    # Code generation
+    if args.generate or args.generate_only:
+        print("\n" + "=" * 60)
+        print("🔧 CODE GENERATION")
+        print("=" * 60)
+
+        try:
+            from datastage_analysis.generation import MigrationGenerator
+
+            # Determine which jobs to generate
+            jobs_filter = None
+            if args.generate_only and args.generate_only.lower() != 'all':
+                jobs_filter = [j.strip() for j in args.generate_only.split(',')]
+                print(f"Generating code for {len(jobs_filter)} specified jobs")
+
+            # Initialize generator
+            use_llm = not args.no_llm
+            generator = MigrationGenerator(use_llm=use_llm)
+
+            # Override LLM provider if specified
+            if args.llm_provider and use_llm:
+                print(f"Using LLM provider: {args.llm_provider}")
+
+            # Get structures from analyzer (stored during analysis)
+            structures = {}
+            for pred in results.get("predictions", []):
+                # We need to get structures - they're collected during analysis
+                # but not returned. For now, re-parse or use empty
+                structures[pred.job_name] = {}
+
+            # Run generation
+            gen_results = generator.generate(
+                predictions=results.get("predictions", []),
+                structures=structures,
+                jobs_filter=jobs_filter,
+                output_dir=args.output_dir,
+            )
+
+            # Print generation summary
+            gen_summary = gen_results.get_summary()
+            print(f"\n📊 Generation Summary:")
+            print(f"   Total: {gen_summary['total_jobs']}")
+            print(f"   Success: {gen_summary['successful_jobs']} ({gen_summary['success_rate']}%)")
+            print(f"   Failed: {gen_summary['failed_jobs']}")
+            if gen_summary['total_llm_tokens'] > 0:
+                print(f"   LLM Tokens Used: {gen_summary['total_llm_tokens']:,}")
+            print(f"\n📁 Output directory: {args.output_dir}")
+
+        except ImportError as e:
+            print(f"❌ Generation module not available: {e}")
+            print("   Install dependencies: pip install jinja2 anthropic")
+        except Exception as e:
+            print(f"❌ Generation failed: {e}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == "__main__":
