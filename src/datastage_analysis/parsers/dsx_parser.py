@@ -156,14 +156,22 @@ class DSXParser:
             return None
 
     def _parse_xml_dsx(self, file_obj, file_path: Path, is_gzip: bool) -> Optional[DataStageJob]:
-        """Parse XML format DSX."""
+        """Parse XML format DSX (standard XML or DSExport format)."""
         try:
             root = ET.parse(file_obj).getroot()
-            structure = self._extract_job_structure(root)
+
+            # Detect format: DSExport vs standard XML
+            if root.tag == 'DSExport' or root.find('.//DSExport') is not None:
+                # DSExport format
+                structure = self._extract_dsexport_structure(root)
+            else:
+                # Standard XML format
+                structure = self._extract_job_structure(root)
+
             content_hash = self._calculate_hash_incremental(file_path, is_gzip=is_gzip)
             fingerprint = self._generate_fingerprint(structure)
             job_name = structure.get('name', file_path.stem)
-            
+
             return DataStageJob(
                 name=job_name,
                 path=file_path,
@@ -174,6 +182,133 @@ class DSXParser:
         except Exception as e:
             logger.error(f"XML parsing failed for {file_path}: {e}")
             return None
+
+    def _extract_dsexport_structure(self, root: ET.Element) -> Dict[str, Any]:
+        """Extract job structure from DSExport XML format."""
+        structure = {'name': '', 'stages': [], 'links': [], 'jobs': []}
+
+        # Handle both root being DSExport or containing it
+        dsexport = root if root.tag == 'DSExport' else root.find('.//DSExport')
+        if dsexport is None:
+            dsexport = root
+
+        # Find all Job elements
+        for job_elem in dsexport.findall('.//Job'):
+            job_name = job_elem.get('Identifier', '')
+            job_data = {'name': job_name, 'stages': [], 'links': [], 'stage_types': []}
+
+            # Parse Record elements (stages and other definitions)
+            for record in job_elem.findall('.//Record'):
+                record_type = record.get('Type', '')
+
+                # Stage definitions
+                if record_type in ('CCustomStage', 'CTransformerStage', 'CContainerDef',
+                                   'CDBConnectorStage', 'CFileConnectorStage',
+                                   'CODBCStage', 'COracleOCIStage', 'CDB2Stage',
+                                   'CSeqFileStage', 'CDatasetStage', 'CHashedFileStage',
+                                   'CLookupStage', 'CAggregatorStage', 'CJoinStage',
+                                   'CSortStage', 'CFilterStage', 'CFunnelStage',
+                                   'CMergeStage', 'CRemoveDupStage', 'CSurrogateKeyStage',
+                                   'CChangeApplyStage', 'CChangeCaptureStage',
+                                   'CSCDStage', 'CPivotStage', 'CRowGeneratorStage',
+                                   'CColumnGeneratorStage', 'CModifyStage', 'CCopyStage',
+                                   'CMetaDataImportStage'):
+                    stage_info = self._parse_dsexport_record(record, record_type)
+                    job_data['stages'].append(stage_info)
+                    job_data['stage_types'].append(record_type)
+
+                # Link definitions
+                elif record_type == 'CDSLink':
+                    link_info = self._parse_dsexport_link(record)
+                    if link_info:
+                        job_data['links'].append(link_info)
+
+                # Job definition (contains job-level metadata)
+                elif record_type == 'CJobDefn':
+                    if not job_name:
+                        job_name = self._get_property_value(record, 'Identifier')
+                        job_data['name'] = job_name
+
+            if job_data['name'] or job_data['stages']:
+                structure['jobs'].append(job_data)
+
+        # If single job, flatten structure
+        if len(structure['jobs']) == 1:
+            job = structure['jobs'][0]
+            structure['name'] = job['name']
+            structure['stages'] = job['stages']
+            structure['links'] = job['links']
+        elif structure['jobs']:
+            # Multiple jobs - use first job's name or file stem
+            structure['name'] = structure['jobs'][0].get('name', 'MultiJob')
+            for job in structure['jobs']:
+                structure['stages'].extend(job['stages'])
+                structure['links'].extend(job['links'])
+
+        logger.debug(f"DSExport parsed: {structure['name']} with {len(structure['stages'])} stages")
+        return structure
+
+    def _parse_dsexport_record(self, record: ET.Element, record_type: str) -> Dict[str, Any]:
+        """Parse a DSExport Record element as a stage."""
+        stage_info = {
+            'name': self._get_property_value(record, 'Identifier') or self._get_property_value(record, 'Name') or '',
+            'type': record_type,
+            'properties': {}
+        }
+
+        # Extract common properties
+        property_names = [
+            'Identifier', 'Name', 'SQLStatement', 'TableName', 'FileName',
+            'Connection', 'Database', 'Schema', 'Query', 'Server',
+            'InputLinks', 'OutputLinks', 'StageType', 'OLEType',
+            'NextID', 'Description', 'XMLProperties'
+        ]
+
+        for prop_name in property_names:
+            value = self._get_property_value(record, prop_name)
+            if value:
+                stage_info['properties'][prop_name] = value
+
+        # Also check for Collection elements (contain columns, etc.)
+        for collection in record.findall('.//Collection'):
+            coll_name = collection.get('Name', '')
+            coll_type = collection.get('Type', '')
+            if coll_name and coll_type:
+                stage_info['properties'][f'Collection_{coll_name}'] = coll_type
+
+        return stage_info
+
+    def _parse_dsexport_link(self, record: ET.Element) -> Optional[Dict[str, Any]]:
+        """Parse a DSExport CDSLink record."""
+        from_stage = self._get_property_value(record, 'FromStage') or self._get_property_value(record, 'InputPin')
+        to_stage = self._get_property_value(record, 'ToStage') or self._get_property_value(record, 'OutputPin')
+        link_name = self._get_property_value(record, 'Identifier') or self._get_property_value(record, 'Name')
+
+        if from_stage or to_stage:
+            return {
+                'from': from_stage or '',
+                'to': to_stage or '',
+                'name': link_name or ''
+            }
+        return None
+
+    def _get_property_value(self, element: ET.Element, property_name: str) -> Optional[str]:
+        """Get property value from DSExport element."""
+        # Try as attribute first
+        if element.get(property_name):
+            return element.get(property_name)
+
+        # Try as child Property element
+        for prop in element.findall('.//Property'):
+            if prop.get('Name') == property_name:
+                return prop.text or prop.get('Value', '')
+
+        # Try as direct child element
+        child = element.find(f'.//{property_name}')
+        if child is not None:
+            return child.text or ''
+
+        return None
 
     def _parse_native_dsx(self, file_obj, file_path: Path) -> Optional[DataStageJob]:
         """Parse native IBM DataStage DSX format."""
