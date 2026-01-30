@@ -226,6 +226,25 @@ class MigrationAnalyzer:
                 p.job_name for p in predictions
                 if p.risk_level in (MigrationRisk.HIGH, MigrationRisk.CRITICAL)
             ],
+            "unknown_stages": self._collect_unknown_stages(predictions),
+        }
+
+    def _collect_unknown_stages(self, predictions: List[MigrationPrediction]) -> Dict[str, Any]:
+        """Collect all unknown/unrecognized DataStage stage types."""
+        unknown_counts = {}
+        jobs_with_unknown = []
+
+        for p in predictions:
+            if hasattr(p, 'unknown_stages') and p.unknown_stages:
+                jobs_with_unknown.append(p.job_name)
+                for stage_type in p.unknown_stages:
+                    unknown_counts[stage_type] = unknown_counts.get(stage_type, 0) + 1
+
+        return {
+            "types": dict(sorted(unknown_counts.items(), key=lambda x: -x[1])),
+            "total_unique": len(unknown_counts),
+            "jobs_affected": len(jobs_with_unknown),
+            "job_names": jobs_with_unknown[:20],  # Limit to first 20
         }
 
 
@@ -279,6 +298,17 @@ def print_report(results: Dict[str, Any]):
         if len(high_risk) > 10:
             print(f"   ... and {len(high_risk) - 10} more")
 
+    # Unknown/Unrecognized DataStage stages
+    unknown_info = summary.get('unknown_stages', {})
+    unknown_types = unknown_info.get('types', {})
+    if unknown_types:
+        print(f"\n❓ UNKNOWN DATASTAGE STAGES ({unknown_info.get('total_unique', 0)} types, {unknown_info.get('jobs_affected', 0)} jobs affected):")
+        for stage_type, count in list(unknown_types.items())[:15]:
+            print(f"   - {stage_type}: {count} occurrence(s)")
+        if len(unknown_types) > 15:
+            print(f"   ... and {len(unknown_types) - 15} more types")
+        print("   💡 Consider adding these to GLUE_COMPLEXITY mapping for better predictions")
+
     # Migration waves
     waves = results.get("migration_waves", [])
     if waves:
@@ -331,11 +361,13 @@ def export_csv(results: Dict[str, Any], output_path: str):
             'risk_factors',
             'automation_blockers',
             'glue_features_needed',
-            'recommendations'
+            'recommendations',
+            'unknown_stages'
         ])
 
         # Data
         for pred in predictions:
+            unknown = getattr(pred, 'unknown_stages', []) or []
             writer.writerow([
                 pred.job_name,
                 pred.category.value,
@@ -347,6 +379,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
                 "; ".join(pred.automation_blockers),
                 "; ".join(pred.glue_features_needed),
                 "; ".join(pred.recommendations),
+                "; ".join(unknown),
             ])
 
     print(f"📄 CSV exported to: {output_path}")

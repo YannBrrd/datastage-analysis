@@ -14,6 +14,12 @@ from concurrent.futures import ProcessPoolExecutor
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
+try:
+    from ..config import get_config
+    _config = get_config()
+except ImportError:
+    _config = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,9 +36,17 @@ class DataStageJob:
 class DSXParser:
     """Parser for DataStage DSX files."""
 
-    def __init__(self, max_workers: int = 4, max_file_size_mb: int = 100):
-        self.max_workers = max_workers
-        self.max_file_size_mb = max_file_size_mb  # Warn for files larger than this
+    def __init__(self, max_workers: int = None, max_file_size_mb: int = None):
+        # Load from config if not provided
+        if _config:
+            parser_config = _config.parser
+            self.max_workers = max_workers or parser_config.get('max_workers', 4)
+            self.max_file_size_mb = max_file_size_mb or parser_config.get('max_file_size_mb', 510)
+            self.max_lines = parser_config.get('max_lines', 500000)
+        else:
+            self.max_workers = max_workers or 4
+            self.max_file_size_mb = max_file_size_mb or 510
+            self.max_lines = 500000
 
     async def parse_all_jobs(self, data_dir: Path) -> List[DataStageJob]:
         """Parse all DataStage files in the data directory asynchronously."""
@@ -143,7 +157,7 @@ class DSXParser:
             job_count = 0
             stage_count = 0
             line_count = 0
-            max_lines = 50000  # Limit for very large files
+            max_lines = self.max_lines  # Configurable via config.yaml
             in_stage_record = False
             
             for line in file_obj:
