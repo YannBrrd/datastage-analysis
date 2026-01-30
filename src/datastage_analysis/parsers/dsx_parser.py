@@ -86,10 +86,24 @@ class DSXParser:
             # Try to determine if it's native DSX format or XML
             if is_gzip:
                 with gzip.open(file_path, 'rt', encoding='utf-8', errors='ignore') as f:
-                    first_line = f.readline().strip()
+                    # Read first few lines to detect format
+                    first_lines = []
+                    for _ in range(10):
+                        line = f.readline()
+                        if not line:
+                            break
+                        first_lines.append(line.strip())
                     f.seek(0)
 
-                    if first_line == "BEGIN HEADER" and not is_xml_file:
+                    # Check if it's native DSX format (look for BEGIN markers)
+                    is_native_dsx = any(
+                        line.startswith("BEGIN HEADER") or line.startswith("BEGIN DSJOB")
+                        for line in first_lines
+                    ) and not is_xml_file
+
+                    logger.debug(f"File {file_path.name}: first line = '{first_lines[0] if first_lines else ''}', is_native_dsx = {is_native_dsx}")
+
+                    if is_native_dsx:
                         # Native DSX format
                         return self._parse_native_dsx(f, file_path)
                     else:
@@ -97,10 +111,24 @@ class DSXParser:
                         return self._parse_xml_dsx(f, file_path, is_gzip=True)
             else:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    first_line = f.readline().strip()
+                    # Read first few lines to detect format
+                    first_lines = []
+                    for _ in range(10):
+                        line = f.readline()
+                        if not line:
+                            break
+                        first_lines.append(line.strip())
                     f.seek(0)
 
-                    if first_line == "BEGIN HEADER" and not is_xml_file:
+                    # Check if it's native DSX format (look for BEGIN markers)
+                    is_native_dsx = any(
+                        line.startswith("BEGIN HEADER") or line.startswith("BEGIN DSJOB")
+                        for line in first_lines
+                    ) and not is_xml_file
+
+                    logger.debug(f"File {file_path.name}: first line = '{first_lines[0] if first_lines else ''}', is_native_dsx = {is_native_dsx}")
+
+                    if is_native_dsx:
                         # Native DSX format
                         return self._parse_native_dsx(f, file_path)
                     else:
