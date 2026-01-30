@@ -1,0 +1,53 @@
+# DataStage Migration Analyzer Configuration
+# ==========================================
+
+# Parser settings
+parser:
+  # Maximum file size before warning (in MB)
+  max_file_size_mb: 510
+
+  # Maximum lines to parse per file (for very large DSX exports)
+  max_lines: 500000
+
+  # Number of parallel workers for parsing
+  max_workers: 4
+
+# Migration prediction settings
+prediction:
+  # Base success probability (0.0 - 1.0)
+  success_baseline: 0.85
+
+  # Effort estimation multiplier (adjust based on actual results)
+  effort_factor: 1.0
+
+  # Confidence adjustment
+  confidence_adjustment: 0.0
+
+# Glue generation settings
+glue:
+  # Default Glue version
+  glue_version: "4.0"
+
+  # Default worker type (Standard, G.1X, G.2X, G.4X, G.8X, Z.2X)
+  default_worker_type: "G.1X"
+
+  # Default number of workers
+  default_num_workers: 2
+
+  # Enable job bookmarks by default
+  enable_bookmarks: true
+
+  # Enable Spark metrics
+  enable_metrics: true
+
+# Output settings
+output:
+  # Default output directory
+  output_dir: "./output"
+
+  # Migration wave size (jobs per wave)
+  wave_size: 50
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR

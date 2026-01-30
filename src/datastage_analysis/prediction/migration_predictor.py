@@ -692,8 +692,12 @@ class MigrationPriorityRanker:
         business_priorities = business_priorities or {}
         scores = []
 
+        # Handle empty predictions list
+        if not predictions:
+            return []
+
         # Normalize effort values
-        max_effort = max(p.estimated_hours for p in predictions) or 1
+        max_effort = max((p.estimated_hours for p in predictions), default=1) or 1
 
         for pred in predictions:
             # Automation potential (AUTO=1.0, SEMI=0.5, MANUAL=0.2)
