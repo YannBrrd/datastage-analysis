@@ -405,6 +405,24 @@ def print_report(results: Dict[str, Any]):
 def export_csv(results: Dict[str, Any], output_path: str):
     """Export results to CSV."""
     predictions = results.get("predictions", [])
+    commonality = results.get("commonality")
+
+    # Build mappings for group identifiers
+    job_to_duplicate_group: Dict[str, str] = {}
+    job_to_similarity_cluster: Dict[str, str] = {}
+
+    if commonality:
+        # Map jobs to duplicate groups (use group index as ID)
+        for idx, group in enumerate(commonality.exact_duplicate_groups, 1):
+            group_id = f"DUP_{idx}"
+            for job_name in group.job_names:
+                job_to_duplicate_group[job_name] = group_id
+
+        # Map jobs to similarity clusters
+        for cluster in commonality.similarity_clusters:
+            cluster_id = f"SIM_{cluster.cluster_id}"
+            for job_name in cluster.job_names:
+                job_to_similarity_cluster[job_name] = cluster_id
 
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -417,6 +435,8 @@ def export_csv(results: Dict[str, Any], output_path: str):
             'success_probability',
             'estimated_hours',
             'risk_level',
+            'duplicate_group',
+            'similarity_cluster',
             'risk_factors',
             'automation_blockers',
             'glue_features_needed',
@@ -434,6 +454,8 @@ def export_csv(results: Dict[str, Any], output_path: str):
                 f"{pred.success_probability:.2f}",
                 f"{pred.estimated_hours:.1f}",
                 pred.risk_level.value,
+                job_to_duplicate_group.get(pred.job_name, ""),
+                job_to_similarity_cluster.get(pred.job_name, ""),
                 "; ".join(pred.risk_factors),
                 "; ".join(pred.automation_blockers),
                 "; ".join(pred.glue_features_needed),
