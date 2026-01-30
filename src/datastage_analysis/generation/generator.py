@@ -2,6 +2,7 @@
 Migration Generator
 
 Main orchestrator for generating AWS Glue code from DataStage jobs.
+Supports batch processing for similar jobs to optimize LLM usage.
 """
 
 import logging
@@ -9,9 +10,11 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from collections import defaultdict
 
 from ..config import get_config
 from ..prediction.migration_predictor import MigrationPrediction, MigrationCategory
+from ..llm.optimization import BatchProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +30,13 @@ class GeneratedJob:
     unit_tests: Optional[str] = None
     documentation: Optional[str] = None
     error: Optional[str] = None
-    generator_type: str = "rule_based"  # rule_based, llm_based, hybrid
+    generator_type: str = "rule_based"  # rule_based, llm_based, hybrid, batch_variation
     llm_tokens_used: int = 0
     generation_time_ms: float = 0.0
     warnings: List[str] = field(default_factory=list)
+    # Batch processing metadata
+    batch_id: Optional[str] = None
+    template_job: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -47,6 +53,8 @@ class GeneratedJob:
             'has_documentation': self.documentation is not None,
             'error': self.error,
             'warnings': self.warnings,
+            'batch_id': self.batch_id,
+            'template_job': self.template_job,
         }
 
 
@@ -60,6 +68,10 @@ class GenerationResult:
     total_llm_tokens: int = 0
     total_time_ms: float = 0.0
     generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Batch processing stats
+    batches_used: int = 0
+    jobs_from_batches: int = 0
+    llm_calls_saved: int = 0
 
     def add(self, job_name: str, result: GeneratedJob):
         """Add a job result."""
@@ -88,6 +100,11 @@ class GenerationResult:
             'total_time_ms': round(self.total_time_ms, 1),
             'by_generator': self._count_by_generator(),
             'generated_at': self.generated_at,
+            'batch_optimization': {
+                'batches_used': self.batches_used,
+                'jobs_from_batches': self.jobs_from_batches,
+                'llm_calls_saved': self.llm_calls_saved,
+            },
         }
 
     def _count_by_generator(self) -> Dict[str, int]:
@@ -104,21 +121,30 @@ class MigrationGenerator:
     Orchestrates migration code generation.
 
     Uses rule-based generation for AUTO jobs, LLM-assisted for others.
+    Supports batch processing for similar jobs to optimize LLM usage.
     """
 
-    def __init__(self, use_llm: bool = True):
+    def __init__(self, use_llm: bool = True, use_batch_processing: bool = True):
         """
         Initialize the migration generator.
 
         Args:
             use_llm: Whether to use LLM for SEMI-AUTO and MANUAL jobs
+            use_batch_processing: Whether to use batch processing for similar jobs
         """
         self.config = get_config()
         self.use_llm = use_llm and self.config.get('llm', 'enabled', default=True)
+        self.use_batch_processing = use_batch_processing and self.use_llm
 
         # Initialize generators
         from .rule_based import RuleBasedGenerator
         self.rule_based = RuleBasedGenerator()
+
+        # Initialize batch processor
+        self.batch_processor = BatchProcessor(
+            min_batch_size=2,
+            similarity_threshold=0.85
+        )
 
         # Initialize LLM generator if enabled
         self.llm_generator = None
@@ -132,6 +158,7 @@ class MigrationGenerator:
             except Exception as e:
                 logger.warning(f"Failed to initialize LLM generator: {e}")
                 self.use_llm = False
+                self.use_batch_processing = False
 
     def generate(
         self,
@@ -139,6 +166,7 @@ class MigrationGenerator:
         structures: Dict[str, Dict],
         jobs_filter: Optional[List[str]] = None,
         output_dir: Optional[str] = None,
+        cluster_info: Optional[Dict[str, Dict]] = None,
     ) -> GenerationResult:
         """
         Generate migration code for analyzed jobs.
@@ -148,6 +176,7 @@ class MigrationGenerator:
             structures: Job structures from parser
             jobs_filter: Optional list of job names to generate (None = all)
             output_dir: Directory to write generated files
+            cluster_info: Optional dict with cluster info per job from analysis
 
         Returns:
             GenerationResult with all generated code
@@ -175,46 +204,202 @@ class MigrationGenerator:
             result = self._generate_auto(pred, structure)
             results.add(pred.job_name, result)
 
-        # Phase 2: Hybrid generation for SEMI-AUTO jobs
-        if semi_jobs:
-            if self.use_llm and self.llm_generator:
-                print(f"🤖 Generating SEMI-AUTO jobs ({len(semi_jobs)}) with hybrid generator...")
-                for pred in semi_jobs:
-                    structure = structures.get(pred.job_name, {})
-                    result = self._generate_semi_auto(pred, structure)
-                    results.add(pred.job_name, result)
-            else:
-                print(f"🔧 Generating SEMI-AUTO jobs ({len(semi_jobs)}) with rule-based (LLM disabled)...")
-                for pred in semi_jobs:
-                    structure = structures.get(pred.job_name, {})
-                    result = self._generate_auto(pred, structure)
-                    result.warnings.append("Generated with rule-based due to LLM disabled")
-                    results.add(pred.job_name, result)
+        # Phase 2: SEMI-AUTO and MANUAL jobs with batch optimization
+        llm_jobs = semi_jobs + manual_jobs
 
-        # Phase 3: LLM generation for MANUAL jobs
-        if manual_jobs:
-            if self.use_llm and self.llm_generator:
-                print(f"🤖 Generating MANUAL jobs ({len(manual_jobs)}) with LLM generator...")
-                for pred in manual_jobs:
-                    structure = structures.get(pred.job_name, {})
-                    result = self._generate_manual(pred, structure)
-                    results.add(pred.job_name, result)
+        if llm_jobs and self.use_llm and self.llm_generator:
+            if self.use_batch_processing and cluster_info:
+                # Use batch processing for similar jobs
+                self._generate_with_batches(
+                    llm_jobs, structures, cluster_info, results
+                )
             else:
-                print(f"⚠️  Skipping MANUAL jobs ({len(manual_jobs)}) - LLM required but disabled")
-                for pred in manual_jobs:
-                    results.add(pred.job_name, GeneratedJob(
-                        job_name=pred.job_name,
-                        category=pred.category,
-                        success=False,
-                        error="LLM required for MANUAL jobs but is disabled",
-                        generator_type="skipped",
-                    ))
+                # Individual generation without batching
+                self._generate_individually(
+                    semi_jobs, manual_jobs, structures, results
+                )
+        elif llm_jobs:
+            # LLM disabled fallback
+            print(f"🔧 Generating SEMI-AUTO/MANUAL jobs ({len(llm_jobs)}) with rule-based (LLM disabled)...")
+            for pred in semi_jobs:
+                structure = structures.get(pred.job_name, {})
+                result = self._generate_auto(pred, structure)
+                result.warnings.append("Generated with rule-based due to LLM disabled")
+                results.add(pred.job_name, result)
+
+            for pred in manual_jobs:
+                results.add(pred.job_name, GeneratedJob(
+                    job_name=pred.job_name,
+                    category=pred.category,
+                    success=False,
+                    error="LLM required for MANUAL jobs but is disabled",
+                    generator_type="skipped",
+                ))
 
         # Write outputs
         if output_dir:
             self._write_outputs(results, output_dir)
 
         return results
+
+    def _generate_with_batches(
+        self,
+        predictions: List[MigrationPrediction],
+        structures: Dict[str, Dict],
+        cluster_info: Dict[str, Dict],
+        results: GenerationResult
+    ):
+        """Generate jobs using batch processing for similar jobs."""
+        import time
+
+        # Group jobs by cluster
+        clusters = self._group_by_cluster(predictions, cluster_info)
+
+        # Separate batched and individual jobs
+        batched_jobs = set()
+        batches = []
+
+        for cluster_id, jobs in clusters.items():
+            if cluster_id and len(jobs) >= 2:
+                # This is a batch
+                template_job = self._select_template_job(jobs, structures)
+                batches.append({
+                    'cluster_id': cluster_id,
+                    'template': template_job,
+                    'jobs': jobs
+                })
+                for job in jobs:
+                    batched_jobs.add(job.job_name)
+
+        individual_jobs = [p for p in predictions if p.job_name not in batched_jobs]
+
+        # Process batches
+        if batches:
+            total_in_batches = sum(len(b['jobs']) for b in batches)
+            print(f"📦 Processing {len(batches)} batches ({total_in_batches} jobs) with batch optimization...")
+
+            for batch in batches:
+                start = time.time()
+
+                template_pred = batch['template']
+                template_struct = structures.get(template_pred.job_name, {})
+
+                similar_jobs = [
+                    (p.job_name, p, structures.get(p.job_name, {}))
+                    for p in batch['jobs']
+                    if p.job_name != template_pred.job_name
+                ]
+
+                batch_results = self.llm_generator.generate_for_batch(
+                    template_job=template_pred.job_name,
+                    template_prediction=template_pred,
+                    template_structure=template_struct,
+                    similar_jobs=similar_jobs,
+                )
+
+                # Add batch metadata and results
+                for job_name, result in batch_results.items():
+                    result.batch_id = batch['cluster_id']
+                    result.template_job = template_pred.job_name if job_name != template_pred.job_name else None
+                    result.generation_time_ms = (time.time() - start) * 1000 / len(batch_results)
+                    results.add(job_name, result)
+
+                # Update batch stats
+                results.batches_used += 1
+                results.jobs_from_batches += len(batch['jobs'])
+                results.llm_calls_saved += len(batch['jobs']) - 1  # Only 1 full LLM call per batch
+
+                print(f"   ✓ Batch {batch['cluster_id']}: {len(batch['jobs'])} jobs "
+                      f"(template: {template_pred.job_name})")
+
+        # Process remaining individual jobs
+        if individual_jobs:
+            print(f"🤖 Generating {len(individual_jobs)} individual jobs...")
+            for pred in individual_jobs:
+                structure = structures.get(pred.job_name, {})
+                if pred.category == MigrationCategory.SEMI_AUTO:
+                    result = self._generate_semi_auto(pred, structure)
+                else:
+                    result = self._generate_manual(pred, structure)
+                results.add(pred.job_name, result)
+
+    def _generate_individually(
+        self,
+        semi_jobs: List[MigrationPrediction],
+        manual_jobs: List[MigrationPrediction],
+        structures: Dict[str, Dict],
+        results: GenerationResult
+    ):
+        """Generate jobs individually without batch optimization."""
+        if semi_jobs:
+            print(f"🤖 Generating SEMI-AUTO jobs ({len(semi_jobs)}) with hybrid generator...")
+            for pred in semi_jobs:
+                structure = structures.get(pred.job_name, {})
+                result = self._generate_semi_auto(pred, structure)
+                results.add(pred.job_name, result)
+
+        if manual_jobs:
+            print(f"🤖 Generating MANUAL jobs ({len(manual_jobs)}) with LLM generator...")
+            for pred in manual_jobs:
+                structure = structures.get(pred.job_name, {})
+                result = self._generate_manual(pred, structure)
+                results.add(pred.job_name, result)
+
+    def _group_by_cluster(
+        self,
+        predictions: List[MigrationPrediction],
+        cluster_info: Dict[str, Dict]
+    ) -> Dict[str, List[MigrationPrediction]]:
+        """Group predictions by similarity cluster."""
+        clusters = defaultdict(list)
+
+        for pred in predictions:
+            info = cluster_info.get(pred.job_name, {})
+            cluster_id = info.get('similarity_cluster') or info.get('duplicate_group')
+
+            if cluster_id and cluster_id != '-':
+                clusters[cluster_id].append(pred)
+            else:
+                # No cluster, use job name as individual "cluster"
+                clusters[f"individual_{pred.job_name}"].append(pred)
+
+        return dict(clusters)
+
+    def _select_template_job(
+        self,
+        jobs: List[MigrationPrediction],
+        structures: Dict[str, Dict]
+    ) -> MigrationPrediction:
+        """Select the best template job from a cluster."""
+        best = None
+        best_score = -1
+
+        for job in jobs:
+            score = 0
+            structure = structures.get(job.job_name, {})
+
+            # Prefer jobs with more complete structures
+            if structure:
+                score += len(structure.get('stages', [])) * 0.1
+                score += len(structure.get('links', [])) * 0.05
+
+            # Prefer higher success probability
+            score += job.success_probability * 5
+
+            # Prefer SEMI-AUTO over MANUAL (more automatable)
+            if job.category == MigrationCategory.SEMI_AUTO:
+                score += 2
+
+            # Prefer moderate complexity
+            if hasattr(job, 'complexity_score'):
+                if 3 <= job.complexity_score <= 7:
+                    score += 1
+
+            if score > best_score:
+                best_score = score
+                best = job
+
+        return best or jobs[0]
 
     def _generate_auto(
         self,

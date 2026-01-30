@@ -174,6 +174,7 @@ class MigrationAnalyzer:
 
         return {
             "predictions": predictions,
+            "structures": structures,  # Include structures for generation
             "summary": summary,
             "ranked_jobs": ranked_jobs,
             "commonality": commonality_report,
@@ -513,6 +514,43 @@ def export_json(results: Dict[str, Any], output_path: str):
     print(f"📄 JSON exported to: {output_path}")
 
 
+def _build_cluster_info(commonality) -> Optional[Dict[str, Dict]]:
+    """
+    Build cluster info dict from commonality report.
+
+    Maps each job to its cluster identifiers for batch processing.
+    """
+    if not commonality:
+        return None
+
+    cluster_info: Dict[str, Dict] = {}
+
+    # Map jobs to duplicate groups
+    for idx, group in enumerate(commonality.exact_duplicate_groups, 1):
+        group_id = f"DUP_{idx}"
+        for job_name in group.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['duplicate_group'] = group_id
+
+    # Map jobs to similarity clusters
+    for cluster in commonality.similarity_clusters:
+        cluster_id = f"SIM_{cluster.cluster_id}"
+        for job_name in cluster.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['similarity_cluster'] = cluster_id
+
+    # Map jobs to pattern families
+    for family in commonality.pattern_families:
+        for job_name in family.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['pattern_family'] = family.pattern_name
+
+    return cluster_info if cluster_info else None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze DataStage jobs for AWS Glue migration",
@@ -636,20 +674,24 @@ Examples:
                 jobs_filter = [j.strip() for j in args.generate_only.split(',')]
                 print(f"Generating code for {len(jobs_filter)} specified jobs")
 
-            # Initialize generator
+            # Initialize generator with batch processing enabled
             use_llm = not args.no_llm
-            generator = MigrationGenerator(use_llm=use_llm)
+            generator = MigrationGenerator(use_llm=use_llm, use_batch_processing=use_llm)
 
             # Override LLM provider if specified
             if args.llm_provider and use_llm:
                 print(f"Using LLM provider: {args.llm_provider}")
 
-            # Get structures from analyzer (stored during analysis)
-            structures = {}
-            for pred in results.get("predictions", []):
-                # We need to get structures - they're collected during analysis
-                # but not returned. For now, re-parse or use empty
-                structures[pred.job_name] = {}
+            # Get structures from analysis results
+            structures = results.get("structures", {})
+
+            # Build cluster info from commonality report
+            cluster_info = _build_cluster_info(results.get("commonality"))
+
+            if cluster_info and use_llm:
+                n_clustered = sum(1 for v in cluster_info.values()
+                                 if v.get('similarity_cluster') or v.get('duplicate_group'))
+                print(f"📦 Batch optimization: {n_clustered} jobs in clusters")
 
             # Run generation
             gen_results = generator.generate(
@@ -657,6 +699,7 @@ Examples:
                 structures=structures,
                 jobs_filter=jobs_filter,
                 output_dir=args.output_dir,
+                cluster_info=cluster_info,
             )
 
             # Print generation summary
@@ -667,6 +710,15 @@ Examples:
             print(f"   Failed: {gen_summary['failed_jobs']}")
             if gen_summary['total_llm_tokens'] > 0:
                 print(f"   LLM Tokens Used: {gen_summary['total_llm_tokens']:,}")
+
+            # Batch optimization stats
+            batch_stats = gen_summary.get('batch_optimization', {})
+            if batch_stats.get('batches_used', 0) > 0:
+                print(f"\n   📦 Batch Optimization:")
+                print(f"      Batches used: {batch_stats['batches_used']}")
+                print(f"      Jobs from batches: {batch_stats['jobs_from_batches']}")
+                print(f"      LLM calls saved: {batch_stats['llm_calls_saved']}")
+
             print(f"\n📁 Output directory: {args.output_dir}")
 
         except ImportError as e:
