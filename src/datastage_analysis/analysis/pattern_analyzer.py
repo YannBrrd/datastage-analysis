@@ -51,18 +51,33 @@ class PatternAnalyzer:
     # Stage type categories for migration
     SOURCE_STAGES = {
         'OracleConnector', 'DB2Connector', 'SQLServerConnector', 'TeradataConnector',
-        'SequentialFile', 'FileSet', 'Dataset', 'ODBCConnector', 'JDBCConnector'
+        'SequentialFile', 'FileSet', 'Dataset', 'ODBCConnector', 'JDBCConnector',
+        # Internal class names
+        'CSeqFileStage', 'CHashedFileStage', 'CODBCStage', 'COracleOCIStage',
+        'CDB2APISTG', 'CKafkaConnectorPX', 'CS3PXStage'
     }
-    
+
     TARGET_STAGES = {
         'OracleConnector', 'DB2Connector', 'SQLServerConnector', 'TeradataConnector',
-        'SequentialFile', 'Dataset', 'ODBCConnector', 'JDBCConnector'
+        'SequentialFile', 'Dataset', 'ODBCConnector', 'JDBCConnector',
+        # Internal class names
+        'CSeqFileStage', 'CHashedFileStage', 'CODBCStage', 'COracleOCIStage',
+        'CDB2APISTG', 'CKafkaConnectorPX', 'CS3PXStage'
     }
-    
+
     TRANSFORMATION_STAGES = {
         'Transformer', 'Join', 'Lookup', 'Aggregator', 'Sort', 'Funnel',
         'Remove Duplicates', 'Filter', 'Copy', 'Modify', 'Pivot', 'ChangeCapture',
-        'SurrogateKeyGenerator', 'ColumnGenerator', 'Merge', 'Switch'
+        'SurrogateKeyGenerator', 'ColumnGenerator', 'Merge', 'Switch',
+        # Internal class names
+        'CTransformerStage', 'CCustomStage', 'CXMLStage'
+    }
+
+    # Metadata/port types to ignore in stage counting
+    METADATA_STAGES = {
+        'CContainerView', 'CJobDefn', 'CAnnotation',
+        'CTrxInput', 'CTrxOutput', 'CCustomInput', 'CCustomOutput',
+        'CSeqInput', 'CSeqOutput', 'CHashedInput', 'CHashedOutput'
     }
     
     # AWS Glue equivalence difficulty (1=easy, 5=hard)
@@ -113,6 +128,31 @@ class PatternAnalyzer:
         'Head': 1,                # Easy: limit()
         'Tail': 2,                # Medium: reverse sort + limit
         'Sample': 1,              # Easy: sample()
+
+        # DataStage Internal Class Names (C-prefixed)
+        'CTransformerStage': 2,   # Transformer stage
+        'CTrxInput': 0,           # Transformer input port (metadata)
+        'CTrxOutput': 0,          # Transformer output port (metadata)
+        'CCustomStage': 3,        # Custom/user-defined stage
+        'CCustomInput': 0,        # Custom stage input port (metadata)
+        'CCustomOutput': 0,       # Custom stage output port (metadata)
+        'CSeqFileStage': 1,       # Sequential file stage
+        'CSeqInput': 0,           # Sequential file input port (metadata)
+        'CSeqOutput': 0,          # Sequential file output port (metadata)
+        'CHashedFileStage': 2,    # Hashed file stage (keyed access)
+        'CHashedInput': 0,        # Hashed file input port (metadata)
+        'CHashedOutput': 0,       # Hashed file output port (metadata)
+        'CContainerView': 0,      # Container view (metadata, ignore)
+        'CJobDefn': 0,            # Job definition (metadata, ignore)
+        'CAnnotation': 0,         # Annotation/comment (ignore)
+        'CODBCStage': 2,          # ODBC stage
+        'COracleOCIStage': 2,     # Oracle OCI stage
+        'CDB2APISTG': 2,          # DB2 API stage
+        'CXMLStage': 3,           # XML processing stage
+        'CWebServicePXStage': 4,  # Web service stage (complex)
+        'CMQSeriesPXStage': 4,    # MQ Series stage (complex)
+        'CKafkaConnectorPX': 2,   # Kafka connector
+        'CS3PXStage': 1,          # S3 stage (native Glue support)
     }
 
     # Legacy alias for backward compatibility
