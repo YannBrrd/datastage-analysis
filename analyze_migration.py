@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from datastage_analysis.parsers.dsx_parser import DSXParser
 from datastage_analysis.analysis.pattern_analyzer import PatternAnalyzer
+from datastage_analysis.analysis.commonality_detector import CommonalityDetector
 from datastage_analysis.prediction.migration_predictor import (
     MigrationPredictor,
     MigrationPrediction,
@@ -41,6 +42,7 @@ class MigrationAnalyzer:
         self.parser = DSXParser()
         self.pattern_analyzer = PatternAnalyzer()
         self.predictor = MigrationPredictor()
+        self.commonality_detector = CommonalityDetector()
         self.verbose = verbose
         self.debug = debug
 
@@ -140,11 +142,15 @@ class MigrationAnalyzer:
         ranked_jobs = ranker.rank_jobs(predictions)
         waves = ranker.create_migration_waves(ranked_jobs, wave_size=50)
 
+        # Analyze commonalities (duplicates, patterns)
+        commonality_report = self.commonality_detector.analyze(structures)
+
         return {
             "predictions": predictions,
             "summary": summary,
             "ranked_jobs": ranked_jobs,
             "migration_waves": waves,
+            "commonality": commonality_report,
             "errors": errors,
             "analyzed_at": datetime.now().isoformat(),
         }
@@ -346,6 +352,46 @@ def print_report(results: Dict[str, Any]):
                 icon = icons.get(pred.category, "⚪")
                 print(f"   {icon} {job_name} (score: {score:.3f}, {pred.estimated_hours:.1f}h)")
 
+    # Commonality Analysis
+    commonality = results.get("commonality")
+    if commonality:
+        print(f"\n📋 COMMONALITY ANALYSIS")
+        print(f"   Total Jobs: {commonality.total_jobs}")
+        print(f"   Unique Patterns: {commonality.unique_patterns}")
+
+        # Exact duplicates
+        dup_groups = commonality.exact_duplicate_groups
+        if dup_groups:
+            dup_job_count = sum(g.count for g in dup_groups)
+            print(f"\n   🔁 Exact Duplicates: {dup_job_count} jobs in {len(dup_groups)} groups")
+            for group in dup_groups[:5]:
+                print(f"      - {group.count} jobs: {', '.join(group.job_names[:3])}{'...' if group.count > 3 else ''}")
+            if len(dup_groups) > 5:
+                print(f"      ... and {len(dup_groups) - 5} more groups")
+
+        # Similar clusters
+        clusters = commonality.similarity_clusters
+        if clusters:
+            cluster_job_count = sum(c.count for c in clusters)
+            print(f"\n   🔗 Similar Jobs (>85%): {cluster_job_count} jobs in {len(clusters)} clusters")
+            for cluster in clusters[:5]:
+                print(f"      - {cluster.count} jobs ({cluster.pattern_signature})")
+            if len(clusters) > 5:
+                print(f"      ... and {len(clusters) - 5} more clusters")
+
+        # Pattern families
+        families = commonality.pattern_families
+        if families:
+            print(f"\n   📂 Pattern Families ({len(families)}):")
+            for family in families[:8]:
+                print(f"      - {family.pattern_name}: {family.count} jobs → {family.migration_template}")
+            if len(families) > 8:
+                print(f"      ... and {len(families) - 8} more patterns")
+
+        # Effort reduction summary
+        print(f"\n   💡 Effective Unique Jobs: {commonality.effective_unique_jobs} (vs {commonality.total_jobs} total)")
+        print(f"   📉 Estimated Effort Reduction: {commonality.effort_reduction_percent:.1f}%")
+
     # Errors
     errors = results.get("errors", [])
     if errors:
@@ -400,12 +446,17 @@ def export_csv(results: Dict[str, Any], output_path: str):
 
 def export_json(results: Dict[str, Any], output_path: str):
     """Export results to JSON."""
+    # Convert commonality report to dict if present
+    commonality = results.get("commonality")
+    commonality_dict = commonality.to_dict() if commonality else {}
+
     # Convert predictions to dicts
     output = {
         "summary": results.get("summary", {}),
         "predictions": [p.to_dict() for p in results.get("predictions", [])],
         "ranked_jobs": results.get("ranked_jobs", []),
         "migration_waves": results.get("migration_waves", []),
+        "commonality": commonality_dict,
         "errors": results.get("errors", []),
         "analyzed_at": results.get("analyzed_at", ""),
     }
