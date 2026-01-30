@@ -72,7 +72,7 @@ source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate   # Windows
 
 # Install dependencies
-pip install -r requirements.txt
+uv install -r requirements.txt
 ```
 
 ### Configuration

@@ -66,7 +66,7 @@ class AzureOpenAIClient(LLMClient):
     """
     Azure OpenAI Service client.
 
-    Requires the 'openai' package: pip install openai
+    Requires the 'openai' package: uv install openai
 
     Environment variables:
         AZURE_OPENAI_API_KEY: API key for authentication
@@ -120,7 +120,7 @@ class AzureOpenAIClient(LLMClient):
                 from openai import AzureOpenAI
             except ImportError:
                 raise ProviderError(
-                    "openai package not installed. Run: pip install openai"
+                    "openai package not installed. Run: uv install openai"
                 )
 
             self._client = AzureOpenAI(
