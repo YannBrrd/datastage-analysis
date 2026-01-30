@@ -57,14 +57,16 @@ class MigrationAnalyzer:
         if not dir_path.exists():
             raise FileNotFoundError(f"Directory not found: {directory}")
 
-        # Find all DSX files
-        dsx_files = list(dir_path.glob("**/*.dsx")) + list(dir_path.glob("**/*.dsx.gz"))
+        # Find all DSX files (both .dsx and .dsx.gz)
+        dsx_files = list(dir_path.glob("**/*.dsx"))
+        dsx_gz_files = list(dir_path.glob("**/*.dsx.gz"))
+        all_files = dsx_files + dsx_gz_files
 
-        if not dsx_files:
+        if not all_files:
             print(f"⚠️  No DSX files found in {directory}")
             return {"error": "No DSX files found", "predictions": [], "summary": {}}
 
-        print(f"📁 Found {len(dsx_files)} DSX file(s) in {directory}")
+        print(f"📁 Found {len(dsx_files)} .dsx and {len(dsx_gz_files)} .dsx.gz files (total: {len(all_files)})")
         print("-" * 60)
 
         # Parse and analyze each file
@@ -72,30 +74,40 @@ class MigrationAnalyzer:
         structures: Dict[str, Dict] = {}
         errors: List[Dict] = []
 
-        for i, dsx_file in enumerate(dsx_files, 1):
+        for i, dsx_file in enumerate(all_files, 1):
             if self.verbose:
-                print(f"[{i}/{len(dsx_files)}] Analyzing: {dsx_file.name}")
+                print(f"[{i}/{len(all_files)}] Analyzing: {dsx_file.name}")
 
             try:
-                # Parse DSX file
-                jobs = self.parser.parse_file(str(dsx_file))
+                # Parse DSX file using the parser's internal method
+                job = self.parser._parse_single_job(dsx_file)
 
-                for job in jobs:
-                    job_name = job.get('name', dsx_file.stem)
-                    structure = job.get('structure', {'stages': [], 'links': []})
-                    structures[job_name] = structure
+                if job is None:
+                    errors.append({
+                        "file": str(dsx_file),
+                        "error": "Failed to parse file"
+                    })
+                    continue
 
-                    # Analyze pattern
-                    patterns = self.pattern_analyzer.analyze_jobs([job])
-                    if patterns:
-                        pattern = patterns[0]
+                job_name = job.name
+                structure = job.structure
+                structures[job_name] = structure
 
-                        # Predict migration outcome
-                        prediction = self.predictor.predict(pattern, structure)
-                        predictions.append(prediction)
-
-                        if self.verbose:
-                            self._print_prediction(prediction)
+                # Handle multi-job DSX files
+                jobs_in_file = structure.get('jobs', [])
+                if jobs_in_file and len(jobs_in_file) > 1:
+                    # Process each job separately
+                    for sub_job in jobs_in_file:
+                        sub_name = sub_job.get('name', job_name)
+                        sub_structure = {
+                            'name': sub_name,
+                            'stages': sub_job.get('stages', []),
+                            'links': sub_job.get('links', []),
+                        }
+                        self._analyze_single_job(sub_name, sub_structure, predictions, structures)
+                else:
+                    # Single job
+                    self._analyze_single_job(job_name, structure, predictions, structures)
 
             except Exception as e:
                 errors.append({
@@ -121,6 +133,30 @@ class MigrationAnalyzer:
             "errors": errors,
             "analyzed_at": datetime.now().isoformat(),
         }
+
+    def _analyze_single_job(self, job_name: str, structure: Dict,
+                           predictions: List[MigrationPrediction],
+                           structures: Dict[str, Dict]):
+        """Analyze a single job and add prediction to list."""
+        structures[job_name] = structure
+
+        # Create a mock job dict for pattern analyzer
+        job_dict = {
+            'name': job_name,
+            'structure': structure,
+        }
+
+        # Analyze pattern
+        patterns = self.pattern_analyzer.analyze_jobs([job_dict])
+        if patterns:
+            pattern = patterns[0]
+
+            # Predict migration outcome
+            prediction = self.predictor.predict(pattern, structure)
+            predictions.append(prediction)
+
+            if self.verbose:
+                self._print_prediction(prediction)
 
     def _print_prediction(self, pred: MigrationPrediction):
         """Print a single prediction to console."""
