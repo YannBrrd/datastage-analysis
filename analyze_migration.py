@@ -584,7 +584,7 @@ Examples:
 
     parser.add_argument(
         "--llm-provider",
-        choices=["anthropic", "azure", "aws", "gcp", "openrouter"],
+        choices=["anthropic", "azure", "azure_foundry", "aws", "gcp", "openrouter"],
         help="Override LLM provider from config"
     )
 

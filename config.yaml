@@ -59,13 +59,14 @@ llm:
   # Enable/disable LLM features entirely
   enabled: true
 
-  # Provider: anthropic, azure, aws, gcp, openrouter
+  # Provider: anthropic, azure, azure_foundry, aws, gcp, openrouter
   provider: "anthropic"
 
   # Model selection per provider
   models:
     anthropic: "claude-sonnet-4-20250514"
     azure: "gpt-4o"
+    azure_foundry: "meta-llama-3.1-70b-instruct"
     aws: "anthropic.claude-3-sonnet-20240229-v1:0"
     gcp: "gemini-1.5-pro"
     openrouter: "anthropic/claude-sonnet-4"
@@ -78,21 +79,31 @@ llm:
       base_url: null  # Optional API endpoint override
 
     azure:
+      # Azure OpenAI Service
       # API key from environment: AZURE_OPENAI_API_KEY
       api_key: null
       endpoint: null  # From AZURE_OPENAI_ENDPOINT
       api_version: "2024-02-15-preview"
       deployment_name: "gpt-4o"
 
+    azure_foundry:
+      # Azure AI Foundry (formerly Azure AI Studio)
+      # API key from environment: AZURE_FOUNDRY_API_KEY
+      api_key: null
+      endpoint: null  # From AZURE_FOUNDRY_ENDPOINT
+
     aws:
+      # AWS Bedrock - uses standard AWS credential chain
       region: "us-east-1"
-      profile: null  # Uses default credential chain
+      profile: null  # Optional AWS profile name
 
     gcp:
-      project_id: null  # From GCP_PROJECT_ID
+      # GCP Vertex AI - uses Application Default Credentials
+      project_id: null  # From GOOGLE_CLOUD_PROJECT
       location: "us-central1"
 
     openrouter:
+      # OpenRouter - unified API for multiple providers
       # API key from environment: OPENROUTER_API_KEY
       api_key: null
       base_url: "https://openrouter.ai/api/v1"

@@ -9,17 +9,26 @@ from typing import Optional, Dict, Any
 
 from .client import LLMClient, ProviderError
 from .providers.anthropic import AnthropicClient
+from .providers.azure_openai import AzureOpenAIClient
+from .providers.azure_foundry import AzureFoundryClient
+from .providers.aws_bedrock import BedrockClient
+from .providers.gcp_vertex import VertexClient
+from .providers.openrouter import OpenRouterClient
 
 logger = logging.getLogger(__name__)
 
 # Provider registry
 PROVIDERS: Dict[str, type] = {
     'anthropic': AnthropicClient,
-    # Future providers:
-    # 'azure': AzureOpenAIClient,
-    # 'aws': BedrockClient,
-    # 'gcp': VertexClient,
-    # 'openrouter': OpenRouterClient,
+    'azure': AzureOpenAIClient,
+    'azure_openai': AzureOpenAIClient,  # Alias
+    'azure_foundry': AzureFoundryClient,
+    'foundry': AzureFoundryClient,  # Alias
+    'aws': BedrockClient,
+    'bedrock': BedrockClient,  # Alias
+    'gcp': VertexClient,
+    'vertex': VertexClient,  # Alias
+    'openrouter': OpenRouterClient,
 }
 
 
@@ -33,10 +42,14 @@ def get_llm_client(
     Factory function to create an LLM client.
 
     Args:
-        provider: Provider name (anthropic, azure, aws, gcp, openrouter)
-                  Default: from config or 'anthropic'
+        provider: Provider name. Options:
+                  - anthropic: Direct Anthropic API
+                  - azure / azure_openai: Azure OpenAI Service
+                  - azure_foundry / foundry: Azure AI Foundry
+                  - aws / bedrock: AWS Bedrock
+                  - gcp / vertex: GCP Vertex AI
+                  - openrouter: OpenRouter unified API
         model: Model ID (provider-specific)
-               Default: from config or provider default
         use_cache: Whether to wrap client with caching layer
         **kwargs: Additional provider-specific configuration
 
@@ -47,21 +60,23 @@ def get_llm_client(
         # Use defaults from config
         client = get_llm_client()
 
-        # Specify provider
+        # Anthropic
         client = get_llm_client(provider="anthropic")
 
-        # Specify provider and model
-        client = get_llm_client(
-            provider="anthropic",
-            model="claude-3-5-haiku-20241022"
-        )
+        # Azure OpenAI
+        client = get_llm_client(provider="azure", deployment_name="gpt-4o")
 
-        # With custom configuration
-        client = get_llm_client(
-            provider="anthropic",
-            api_key="sk-...",
-            timeout=60.0
-        )
+        # Azure AI Foundry
+        client = get_llm_client(provider="azure_foundry", model="meta-llama-3.1-70b-instruct")
+
+        # AWS Bedrock
+        client = get_llm_client(provider="aws", region="us-west-2")
+
+        # GCP Vertex AI
+        client = get_llm_client(provider="gcp", project_id="my-project")
+
+        # OpenRouter
+        client = get_llm_client(provider="openrouter", model="anthropic/claude-sonnet-4")
     """
     # Load config
     try:
@@ -85,21 +100,43 @@ def get_llm_client(
 
     # Get provider class
     if provider not in PROVIDERS:
-        available = ', '.join(PROVIDERS.keys())
+        available = ', '.join(sorted(set(PROVIDERS.keys())))
         raise ProviderError(
             f"Unknown provider: {provider}. Available: {available}"
         )
 
     provider_class = PROVIDERS[provider]
 
-    # Determine model
+    # Determine model from config
     if model is None and config:
-        model = config.get('llm', 'models', provider)
+        # Map aliases to config keys
+        config_key = provider
+        if provider in ('azure_openai',):
+            config_key = 'azure'
+        elif provider in ('foundry',):
+            config_key = 'azure_foundry'
+        elif provider in ('bedrock',):
+            config_key = 'aws'
+        elif provider in ('vertex',):
+            config_key = 'gcp'
+
+        model = config.get('llm', 'models', config_key)
 
     # Get provider-specific config
     provider_config = {}
     if config:
-        provider_config = config.get('llm', 'providers', provider, default={}) or {}
+        # Map aliases to config keys
+        config_key = provider
+        if provider in ('azure_openai',):
+            config_key = 'azure'
+        elif provider in ('foundry',):
+            config_key = 'azure_foundry'
+        elif provider in ('bedrock',):
+            config_key = 'aws'
+        elif provider in ('vertex',):
+            config_key = 'gcp'
+
+        provider_config = config.get('llm', 'providers', config_key, default={}) or {}
 
     # Merge configs (kwargs override config file)
     merged_config = {**provider_config, **kwargs}
@@ -128,22 +165,30 @@ def get_llm_client(
     return client
 
 
-def list_providers() -> Dict[str, bool]:
+def list_providers() -> Dict[str, Dict[str, Any]]:
     """
-    List available providers and their availability.
+    List available providers with their info.
 
     Returns:
-        Dict mapping provider name to availability status
+        Dict mapping provider name to info dict
     """
-    result = {}
-    for name, cls in PROVIDERS.items():
-        try:
-            # Check if provider can be instantiated (has required deps)
-            # This is a basic check - actual availability depends on credentials
-            result[name] = True
-        except Exception:
-            result[name] = False
-    return result
+    # Deduplicate aliases
+    unique_providers = {
+        'anthropic': 'Direct Anthropic Claude API',
+        'azure': 'Azure OpenAI Service',
+        'azure_foundry': 'Azure AI Foundry (Llama, Mistral, etc.)',
+        'aws': 'AWS Bedrock (Claude, Llama, Titan)',
+        'gcp': 'GCP Vertex AI (Gemini, Claude)',
+        'openrouter': 'OpenRouter unified API',
+    }
+
+    return {
+        name: {
+            'description': desc,
+            'class': PROVIDERS[name].__name__,
+        }
+        for name, desc in unique_providers.items()
+    }
 
 
 def get_provider_models(provider: str) -> Dict[str, Dict[str, Any]]:
@@ -161,6 +206,20 @@ def get_provider_models(provider: str) -> Dict[str, Dict[str, Any]]:
     if provider == 'anthropic':
         from .providers.anthropic import ANTHROPIC_MODELS
         return ANTHROPIC_MODELS
+    elif provider in ('azure', 'azure_openai'):
+        from .providers.azure_openai import AZURE_MODELS
+        return AZURE_MODELS
+    elif provider in ('azure_foundry', 'foundry'):
+        from .providers.azure_foundry import FOUNDRY_MODELS
+        return FOUNDRY_MODELS
+    elif provider in ('aws', 'bedrock'):
+        from .providers.aws_bedrock import BEDROCK_MODELS
+        return BEDROCK_MODELS
+    elif provider in ('gcp', 'vertex'):
+        from .providers.gcp_vertex import VERTEX_MODELS
+        return VERTEX_MODELS
+    elif provider == 'openrouter':
+        from .providers.openrouter import OPENROUTER_MODELS
+        return OPENROUTER_MODELS
 
-    # Add other providers as implemented
     return {}
