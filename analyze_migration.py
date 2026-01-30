@@ -57,16 +57,18 @@ class MigrationAnalyzer:
         if not dir_path.exists():
             raise FileNotFoundError(f"Directory not found: {directory}")
 
-        # Find all DSX files (both .dsx and .dsx.gz)
+        # Find all DataStage files (.dsx, .dsx.gz, .xml, .xml.gz)
         dsx_files = list(dir_path.glob("**/*.dsx"))
         dsx_gz_files = list(dir_path.glob("**/*.dsx.gz"))
-        all_files = dsx_files + dsx_gz_files
+        xml_files = list(dir_path.glob("**/*.xml"))
+        xml_gz_files = list(dir_path.glob("**/*.xml.gz"))
+        all_files = dsx_files + dsx_gz_files + xml_files + xml_gz_files
 
         if not all_files:
-            print(f"⚠️  No DSX files found in {directory}")
-            return {"error": "No DSX files found", "predictions": [], "summary": {}}
+            print(f"⚠️  No DataStage files found in {directory}")
+            return {"error": "No DataStage files found", "predictions": [], "summary": {}}
 
-        print(f"📁 Found {len(dsx_files)} .dsx and {len(dsx_gz_files)} .dsx.gz files (total: {len(all_files)})")
+        print(f"📁 Found {len(dsx_files)} .dsx, {len(dsx_gz_files)} .dsx.gz, {len(xml_files)} .xml, {len(xml_gz_files)} .xml.gz (total: {len(all_files)})")
         print("-" * 60)
 
         # Parse and analyze each file

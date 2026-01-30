@@ -35,12 +35,14 @@ class DSXParser:
         self.max_file_size_mb = max_file_size_mb  # Warn for files larger than this
 
     async def parse_all_jobs(self, data_dir: Path) -> List[DataStageJob]:
-        """Parse all DSX files in the data directory asynchronously."""
-        # Find both .dsx and .dsx.gz files recursively
+        """Parse all DataStage files in the data directory asynchronously."""
+        # Find .dsx, .dsx.gz, .xml, and .xml.gz files recursively
         dsx_files = list(data_dir.glob("**/*.dsx"))
         dsx_gz_files = list(data_dir.glob("**/*.dsx.gz"))
-        all_files = dsx_files + dsx_gz_files
-        logger.info(f"Found {len(dsx_files)} .dsx files and {len(dsx_gz_files)} .dsx.gz files (total: {len(all_files)})")
+        xml_files = list(data_dir.glob("**/*.xml"))
+        xml_gz_files = list(data_dir.glob("**/*.xml.gz"))
+        all_files = dsx_files + dsx_gz_files + xml_files + xml_gz_files
+        logger.info(f"Found {len(dsx_files)} .dsx, {len(dsx_gz_files)} .dsx.gz, {len(xml_files)} .xml, {len(xml_gz_files)} .xml.gz (total: {len(all_files)})")
 
         # Use multiprocessing for CPU-intensive XML parsing
         loop = asyncio.get_event_loop()
@@ -54,35 +56,41 @@ class DSXParser:
         return [job for job in jobs if job is not None]
 
     def _parse_single_job(self, file_path: Path) -> Optional[DataStageJob]:
-        """Parse a single DSX file (supports .dsx and .dsx.gz)."""
+        """Parse a single DataStage file (supports .dsx, .dsx.gz, .xml, .xml.gz)."""
         try:
             # Check file size
             file_size_mb = file_path.stat().st_size / (1024 * 1024)
             if file_size_mb > self.max_file_size_mb:
                 logger.warning(f"Large file detected: {file_path.name} ({file_size_mb:.1f} MB)")
-            
+
+            # Determine if gzip compressed
+            is_gzip = file_path.suffix == '.gz' or str(file_path).endswith('.gz')
+
+            # Determine if it's explicitly XML format
+            is_xml_file = '.xml' in file_path.suffixes or file_path.name.endswith('.xml.gz')
+
             # Try to determine if it's native DSX format or XML
-            if file_path.suffix == '.gz':
+            if is_gzip:
                 with gzip.open(file_path, 'rt', encoding='utf-8', errors='ignore') as f:
                     first_line = f.readline().strip()
                     f.seek(0)
-                    
-                    if first_line == "BEGIN HEADER":
+
+                    if first_line == "BEGIN HEADER" and not is_xml_file:
                         # Native DSX format
                         return self._parse_native_dsx(f, file_path)
                     else:
-                        # Try XML parsing
+                        # XML parsing (either .xml.gz or XML-format .dsx.gz)
                         return self._parse_xml_dsx(f, file_path, is_gzip=True)
             else:
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     first_line = f.readline().strip()
                     f.seek(0)
-                    
-                    if first_line == "BEGIN HEADER":
+
+                    if first_line == "BEGIN HEADER" and not is_xml_file:
                         # Native DSX format
                         return self._parse_native_dsx(f, file_path)
                     else:
-                        # Try XML parsing
+                        # XML parsing
                         return self._parse_xml_dsx(f, file_path, is_gzip=False)
 
             # Extract job structure (simplified)
