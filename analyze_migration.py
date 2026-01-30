@@ -16,9 +16,11 @@ import sys
 import json
 import csv
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import asdict
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -33,6 +35,7 @@ from datastage_analysis.prediction.migration_predictor import (
     MigrationRisk,
     MigrationPriorityRanker,
 )
+from datastage_analysis.config import get_config
 
 
 class MigrationAnalyzer:
@@ -50,6 +53,17 @@ class MigrationAnalyzer:
             import logging
             logging.basicConfig(level=logging.DEBUG)
             logging.getLogger('datastage_analysis').setLevel(logging.DEBUG)
+
+    def _parse_file(self, dsx_file: Path) -> Tuple[Optional[Any], Optional[Dict]]:
+        """Parse a single DSX file. Thread-safe worker function."""
+        try:
+            parser = DSXParser()  # Create new parser instance per thread
+            job = parser._parse_single_job(dsx_file)
+            if job is None:
+                return None, {"file": str(dsx_file), "error": "Failed to parse file"}
+            return job, None
+        except Exception as e:
+            return None, {"file": str(dsx_file), "error": str(e)}
 
     def analyze_directory(self, directory: str) -> Dict[str, Any]:
         """
@@ -76,71 +90,74 @@ class MigrationAnalyzer:
             print(f"⚠️  No DataStage files found in {directory}")
             return {"error": "No DataStage files found", "predictions": [], "summary": {}}
 
+        # Get config for parallel workers
+        config = get_config()
+        max_workers = config.get('parser', 'max_workers', default=4)
+
         print(f"📁 Found {len(dsx_files)} .dsx, {len(dsx_gz_files)} .dsx.gz, {len(xml_files)} .xml, {len(xml_gz_files)} .xml.gz (total: {len(all_files)})")
+        print(f"🚀 Parsing with {max_workers} parallel workers")
         print("-" * 60)
 
-        # Parse and analyze each file
+        # Parse files in parallel
         predictions: List[MigrationPrediction] = []
         structures: Dict[str, Dict] = {}
         errors: List[Dict] = []
         total_files = len(all_files)
+        completed = 0
+        lock = threading.Lock()
 
-        for i, dsx_file in enumerate(all_files, 1):
-            # Progress indicator
-            progress_pct = int((i / total_files) * 100)
-            bar_width = 30
-            filled = int(bar_width * i / total_files)
-            bar = "█" * filled + "░" * (bar_width - filled)
-            print(f"\r⏳ [{bar}] {progress_pct:3d}% ({i}/{total_files}) {dsx_file.name[:30]:<30}", end="", flush=True)
+        def update_progress(filename: str):
+            nonlocal completed
+            with lock:
+                completed += 1
+                progress_pct = int((completed / total_files) * 100)
+                bar_width = 30
+                filled = int(bar_width * completed / total_files)
+                bar = "█" * filled + "░" * (bar_width - filled)
+                print(f"\r⏳ [{bar}] {progress_pct:3d}% ({completed}/{total_files}) {filename[:30]:<30}", end="", flush=True)
 
-            if self.verbose:
-                print(f"\n[{i}/{total_files}] Analyzing: {dsx_file.name}")
+        # Phase 1: Parallel file parsing
+        parsed_jobs = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(self._parse_file, f): f for f in all_files}
 
-            try:
-                # Parse DSX file using the parser's internal method
-                job = self.parser._parse_single_job(dsx_file)
+            for future in as_completed(future_to_file):
+                dsx_file = future_to_file[future]
+                update_progress(dsx_file.name)
 
-                if job is None:
-                    errors.append({
-                        "file": str(dsx_file),
-                        "error": "Failed to parse file"
-                    })
+                job, error = future.result()
+                if error:
+                    errors.append(error)
                     if self.debug:
-                        print(f"  ❌ Failed to parse: {dsx_file.name}")
-                    continue
+                        print(f"\n  ❌ {error['file']}: {error['error']}")
+                elif job:
+                    parsed_jobs.append((dsx_file, job))
+                    if self.debug:
+                        stages = job.structure.get('stages', [])
+                        jobs_in_struct = job.structure.get('jobs', [])
+                        print(f"\n  📄 {dsx_file.name}: {len(stages)} stages, {len(jobs_in_struct)} sub-jobs")
 
-                if self.debug:
-                    stages = job.structure.get('stages', [])
-                    jobs_in_struct = job.structure.get('jobs', [])
-                    print(f"  📄 {dsx_file.name}: {len(stages)} stages, {len(jobs_in_struct)} sub-jobs")
+        # Phase 2: Sequential analysis (fast, needs shared state)
+        print(f"\r⏳ Analyzing {len(parsed_jobs)} parsed jobs..." + " " * 40, end="", flush=True)
 
-                job_name = job.name
-                structure = job.structure
-                structures[job_name] = structure
+        for dsx_file, job in parsed_jobs:
+            job_name = job.name
+            structure = job.structure
+            structures[job_name] = structure
 
-                # Handle multi-job DSX files
-                jobs_in_file = structure.get('jobs', [])
-                if jobs_in_file and len(jobs_in_file) > 1:
-                    # Process each job separately
-                    for sub_job in jobs_in_file:
-                        sub_name = sub_job.get('name', job_name)
-                        sub_structure = {
-                            'name': sub_name,
-                            'stages': sub_job.get('stages', []),
-                            'links': sub_job.get('links', []),
-                        }
-                        self._analyze_single_job(sub_name, sub_structure, predictions, structures)
-                else:
-                    # Single job
-                    self._analyze_single_job(job_name, structure, predictions, structures)
-
-            except Exception as e:
-                errors.append({
-                    "file": str(dsx_file),
-                    "error": str(e)
-                })
-                if self.verbose:
-                    print(f"  ❌ Error: {e}")
+            # Handle multi-job DSX files
+            jobs_in_file = structure.get('jobs', [])
+            if jobs_in_file and len(jobs_in_file) > 1:
+                for sub_job in jobs_in_file:
+                    sub_name = sub_job.get('name', job_name)
+                    sub_structure = {
+                        'name': sub_name,
+                        'stages': sub_job.get('stages', []),
+                        'links': sub_job.get('links', []),
+                    }
+                    self._analyze_single_job(sub_name, sub_structure, predictions, structures)
+            else:
+                self._analyze_single_job(job_name, structure, predictions, structures)
 
         # Clear progress bar and show completion
         print(f"\r✅ Parsed {total_files} files, found {len(predictions)} jobs" + " " * 40)
@@ -157,6 +174,7 @@ class MigrationAnalyzer:
 
         return {
             "predictions": predictions,
+            "structures": structures,  # Include structures for generation
             "summary": summary,
             "ranked_jobs": ranked_jobs,
             "commonality": commonality_report,
@@ -410,6 +428,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
     # Build mappings for group identifiers
     job_to_duplicate_group: Dict[str, str] = {}
     job_to_similarity_cluster: Dict[str, str] = {}
+    job_to_pattern_family: Dict[str, str] = {}
 
     if commonality:
         # Map jobs to duplicate groups (use group index as ID)
@@ -424,6 +443,11 @@ def export_csv(results: Dict[str, Any], output_path: str):
             for job_name in cluster.job_names:
                 job_to_similarity_cluster[job_name] = cluster_id
 
+        # Map jobs to pattern families
+        for family in commonality.pattern_families:
+            for job_name in family.job_names:
+                job_to_pattern_family[job_name] = family.pattern_name
+
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
 
@@ -437,6 +461,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
             'risk_level',
             'duplicate_group',
             'similarity_cluster',
+            'pattern_family',
             'risk_factors',
             'automation_blockers',
             'glue_features_needed',
@@ -456,6 +481,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
                 pred.risk_level.value,
                 job_to_duplicate_group.get(pred.job_name, ""),
                 job_to_similarity_cluster.get(pred.job_name, ""),
+                job_to_pattern_family.get(pred.job_name, ""),
                 "; ".join(pred.risk_factors),
                 "; ".join(pred.automation_blockers),
                 "; ".join(pred.glue_features_needed),
@@ -486,6 +512,43 @@ def export_json(results: Dict[str, Any], output_path: str):
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"📄 JSON exported to: {output_path}")
+
+
+def _build_cluster_info(commonality) -> Optional[Dict[str, Dict]]:
+    """
+    Build cluster info dict from commonality report.
+
+    Maps each job to its cluster identifiers for batch processing.
+    """
+    if not commonality:
+        return None
+
+    cluster_info: Dict[str, Dict] = {}
+
+    # Map jobs to duplicate groups
+    for idx, group in enumerate(commonality.exact_duplicate_groups, 1):
+        group_id = f"DUP_{idx}"
+        for job_name in group.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['duplicate_group'] = group_id
+
+    # Map jobs to similarity clusters
+    for cluster in commonality.similarity_clusters:
+        cluster_id = f"SIM_{cluster.cluster_id}"
+        for job_name in cluster.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['similarity_cluster'] = cluster_id
+
+    # Map jobs to pattern families
+    for family in commonality.pattern_families:
+        for job_name in family.job_names:
+            if job_name not in cluster_info:
+                cluster_info[job_name] = {}
+            cluster_info[job_name]['pattern_family'] = family.pattern_name
+
+    return cluster_info if cluster_info else None
 
 
 def main():
@@ -530,6 +593,59 @@ Examples:
         help="Enable debug logging to diagnose parsing issues"
     )
 
+    # Generation arguments
+    parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Generate AWS Glue code after analysis"
+    )
+
+    parser.add_argument(
+        "--generate-only",
+        type=str,
+        metavar="JOBS",
+        help="Generate code for specific jobs (comma-separated or 'all')"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./generated",
+        help="Output directory for generated code (default: ./generated)"
+    )
+
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Disable LLM, use rule-based generation only"
+    )
+
+    parser.add_argument(
+        "--llm-provider",
+        choices=["anthropic", "azure", "azure_foundry", "aws", "gcp", "openrouter"],
+        help="Override LLM provider from config"
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Estimate costs and preview batches without generating code"
+    )
+
+    parser.add_argument(
+        "--budget",
+        type=float,
+        metavar="DOLLARS",
+        help="Set budget limit for LLM costs (used with --dry-run for warnings)"
+    )
+
+    parser.add_argument(
+        "--report",
+        type=str,
+        metavar="PATH",
+        help="Generate HTML migration report at specified path"
+    )
+
     args = parser.parse_args()
 
     # Run analysis
@@ -562,6 +678,136 @@ Examples:
     if summary:
         auto_pct = summary.get("auto", {}).get("percentage", 0)
         print(f"\n✨ {auto_pct}% of jobs can be automatically migrated to AWS Glue")
+
+    # HTML Report generation
+    if args.report:
+        try:
+            from datastage_analysis.reporting import generate_html_report
+            report_path = generate_html_report(results, output_path=args.report)
+            print(f"\n📊 HTML report generated: {report_path}")
+        except Exception as e:
+            print(f"❌ Failed to generate HTML report: {e}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
+
+    # Code generation (or dry-run)
+    if args.generate or args.generate_only or args.dry_run:
+        # Build cluster info from commonality report
+        cluster_info = _build_cluster_info(results.get("commonality"))
+
+        # Get structures from analysis results
+        structures = results.get("structures", {})
+
+        # Determine which jobs to generate
+        predictions_to_use = results.get("predictions", [])
+        jobs_filter = None
+        if args.generate_only and args.generate_only.lower() != 'all':
+            jobs_filter = [j.strip() for j in args.generate_only.split(',')]
+            predictions_to_use = [p for p in predictions_to_use if p.job_name in jobs_filter]
+
+        # Dry-run mode
+        if args.dry_run:
+            print("\n" + "=" * 60)
+            print("🔍 DRY-RUN: COST ESTIMATION")
+            print("=" * 60)
+
+            try:
+                from datastage_analysis.generation.dry_run import DryRunEstimator, format_dry_run_report
+
+                provider = args.llm_provider or 'anthropic'
+                estimator = DryRunEstimator(
+                    provider=provider,
+                    budget_limit=args.budget
+                )
+
+                dry_result = estimator.estimate(
+                    predictions=predictions_to_use,
+                    cluster_info=cluster_info,
+                    use_batching=not args.no_llm
+                )
+
+                print(format_dry_run_report(dry_result, provider))
+
+                # Export dry-run results if output specified
+                if args.output and args.output.endswith('.json'):
+                    import json
+                    dry_output = {
+                        'dry_run': True,
+                        'estimate': dry_result.to_dict(),
+                        'analysis_summary': results.get("summary", {}),
+                    }
+                    with open(args.output.replace('.json', '_dry_run.json'), 'w') as f:
+                        json.dump(dry_output, f, indent=2)
+                    print(f"\n📄 Dry-run results exported to: {args.output.replace('.json', '_dry_run.json')}")
+
+            except Exception as e:
+                print(f"❌ Dry-run failed: {e}")
+                if args.debug:
+                    import traceback
+                    traceback.print_exc()
+
+            return  # Exit after dry-run
+
+        print("\n" + "=" * 60)
+        print("🔧 CODE GENERATION")
+        print("=" * 60)
+
+        try:
+            from datastage_analysis.generation import MigrationGenerator
+
+            if jobs_filter:
+                print(f"Generating code for {len(jobs_filter)} specified jobs")
+
+            # Initialize generator with batch processing enabled
+            use_llm = not args.no_llm
+            generator = MigrationGenerator(use_llm=use_llm, use_batch_processing=use_llm)
+
+            # Override LLM provider if specified
+            if args.llm_provider and use_llm:
+                print(f"Using LLM provider: {args.llm_provider}")
+
+            if cluster_info and use_llm:
+                n_clustered = sum(1 for v in cluster_info.values()
+                                 if v.get('similarity_cluster') or v.get('duplicate_group'))
+                print(f"📦 Batch optimization: {n_clustered} jobs in clusters")
+
+            # Run generation
+            gen_results = generator.generate(
+                predictions=results.get("predictions", []),
+                structures=structures,
+                jobs_filter=jobs_filter,
+                output_dir=args.output_dir,
+                cluster_info=cluster_info,
+            )
+
+            # Print generation summary
+            gen_summary = gen_results.get_summary()
+            print(f"\n📊 Generation Summary:")
+            print(f"   Total: {gen_summary['total_jobs']}")
+            print(f"   Success: {gen_summary['successful_jobs']} ({gen_summary['success_rate']}%)")
+            print(f"   Failed: {gen_summary['failed_jobs']}")
+            if gen_summary['total_llm_tokens'] > 0:
+                print(f"   LLM Tokens Used: {gen_summary['total_llm_tokens']:,}")
+
+            # Batch optimization stats
+            batch_stats = gen_summary.get('batch_optimization', {})
+            if batch_stats.get('batches_used', 0) > 0:
+                print(f"\n   📦 Batch Optimization:")
+                print(f"      Batches used: {batch_stats['batches_used']}")
+                print(f"      Jobs from batches: {batch_stats['jobs_from_batches']}")
+                print(f"      LLM calls saved: {batch_stats['llm_calls_saved']}")
+
+            print(f"\n📁 Output directory: {args.output_dir}")
+
+        except ImportError as e:
+            print(f"❌ Generation module not available: {e}")
+            print("   Install dependencies: pip install jinja2 anthropic")
+        except Exception as e:
+            print(f"❌ Generation failed: {e}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
 
 
 if __name__ == "__main__":
