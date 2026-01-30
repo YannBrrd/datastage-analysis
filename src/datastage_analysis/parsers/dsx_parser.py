@@ -30,7 +30,7 @@ class DataStageJob:
 class DSXParser:
     """Parser for DataStage DSX files."""
 
-    def __init__(self, max_workers: int = 4, max_file_size_mb: int = 100):
+    def __init__(self, max_workers: int = 4, max_file_size_mb: int = 500):
         self.max_workers = max_workers
         self.max_file_size_mb = max_file_size_mb  # Warn for files larger than this
 
@@ -143,7 +143,7 @@ class DSXParser:
             job_count = 0
             stage_count = 0
             line_count = 0
-            max_lines = 50000  # Limit for very large files
+            max_lines = 500000  # Limit for very large files (increased for large DSX exports)
             in_stage_record = False
             
             for line in file_obj:
