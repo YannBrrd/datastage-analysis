@@ -37,11 +37,17 @@ from datastage_analysis.prediction.migration_predictor import (
 class MigrationAnalyzer:
     """Analyzes DataStage jobs for AWS Glue migration."""
 
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, debug: bool = False):
         self.parser = DSXParser()
         self.pattern_analyzer = PatternAnalyzer()
         self.predictor = MigrationPredictor()
         self.verbose = verbose
+        self.debug = debug
+
+        if debug:
+            import logging
+            logging.basicConfig(level=logging.DEBUG)
+            logging.getLogger('datastage_analysis').setLevel(logging.DEBUG)
 
     def analyze_directory(self, directory: str) -> Dict[str, Any]:
         """
@@ -89,7 +95,14 @@ class MigrationAnalyzer:
                         "file": str(dsx_file),
                         "error": "Failed to parse file"
                     })
+                    if self.debug:
+                        print(f"  ❌ Failed to parse: {dsx_file.name}")
                     continue
+
+                if self.debug:
+                    stages = job.structure.get('stages', [])
+                    jobs_in_struct = job.structure.get('jobs', [])
+                    print(f"  📄 {dsx_file.name}: {len(stages)} stages, {len(jobs_in_struct)} sub-jobs")
 
                 job_name = job.name
                 structure = job.structure
@@ -439,6 +452,12 @@ Examples:
         help="Show detailed output for each job"
     )
 
+    parser.add_argument(
+        "-d", "--debug",
+        action="store_true",
+        help="Enable debug logging to diagnose parsing issues"
+    )
+
     args = parser.parse_args()
 
     # Run analysis
@@ -446,7 +465,7 @@ Examples:
     print(f"   Analyzing: {args.directory}")
     print()
 
-    analyzer = MigrationAnalyzer(verbose=args.verbose)
+    analyzer = MigrationAnalyzer(verbose=args.verbose, debug=args.debug)
 
     try:
         results = analyzer.analyze_directory(args.directory)
