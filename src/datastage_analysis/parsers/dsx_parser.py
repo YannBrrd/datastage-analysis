@@ -156,14 +156,14 @@ class DSXParser:
             return None
 
     def _parse_xml_dsx(self, file_obj, file_path: Path, is_gzip: bool) -> Optional[DataStageJob]:
-        """Parse XML format DSX (standard XML or DESExport format)."""
+        """Parse XML format DSX (standard XML or DSExport format)."""
         try:
             root = ET.parse(file_obj).getroot()
 
-            # Detect format: DESExport vs standard XML
+            # Detect format: DSExport vs standard XML
             if root.tag == 'DSExport' or root.find('.//DSExport') is not None:
-                # DESExport format
-                structure = self._extract_desexport_structure(root)
+                # DSExport format
+                structure = self._extract_dsexport_structure(root)
             else:
                 # Standard XML format
                 structure = self._extract_job_structure(root)
@@ -183,8 +183,8 @@ class DSXParser:
             logger.error(f"XML parsing failed for {file_path}: {e}")
             return None
 
-    def _extract_desexport_structure(self, root: ET.Element) -> Dict[str, Any]:
-        """Extract job structure from DESExport XML format."""
+    def _extract_dsexport_structure(self, root: ET.Element) -> Dict[str, Any]:
+        """Extract job structure from DSExport XML format."""
         structure = {'name': '', 'stages': [], 'links': [], 'jobs': []}
 
         # Handle both root being DSExport or containing it
@@ -213,13 +213,13 @@ class DSXParser:
                                    'CSCDStage', 'CPivotStage', 'CRowGeneratorStage',
                                    'CColumnGeneratorStage', 'CModifyStage', 'CCopyStage',
                                    'CMetaDataImportStage'):
-                    stage_info = self._parse_desexport_record(record, record_type)
+                    stage_info = self._parse_dsexport_record(record, record_type)
                     job_data['stages'].append(stage_info)
                     job_data['stage_types'].append(record_type)
 
                 # Link definitions
                 elif record_type == 'CDSLink':
-                    link_info = self._parse_desexport_link(record)
+                    link_info = self._parse_dsexport_link(record)
                     if link_info:
                         job_data['links'].append(link_info)
 
@@ -245,11 +245,11 @@ class DSXParser:
                 structure['stages'].extend(job['stages'])
                 structure['links'].extend(job['links'])
 
-        logger.debug(f"DESExport parsed: {structure['name']} with {len(structure['stages'])} stages")
+        logger.debug(f"DSExport parsed: {structure['name']} with {len(structure['stages'])} stages")
         return structure
 
-    def _parse_desexport_record(self, record: ET.Element, record_type: str) -> Dict[str, Any]:
-        """Parse a DESExport Record element as a stage."""
+    def _parse_dsexport_record(self, record: ET.Element, record_type: str) -> Dict[str, Any]:
+        """Parse a DSExport Record element as a stage."""
         stage_info = {
             'name': self._get_property_value(record, 'Identifier') or self._get_property_value(record, 'Name') or '',
             'type': record_type,
@@ -278,8 +278,8 @@ class DSXParser:
 
         return stage_info
 
-    def _parse_desexport_link(self, record: ET.Element) -> Optional[Dict[str, Any]]:
-        """Parse a DESExport CDSLink record."""
+    def _parse_dsexport_link(self, record: ET.Element) -> Optional[Dict[str, Any]]:
+        """Parse a DSExport CDSLink record."""
         from_stage = self._get_property_value(record, 'FromStage') or self._get_property_value(record, 'InputPin')
         to_stage = self._get_property_value(record, 'ToStage') or self._get_property_value(record, 'OutputPin')
         link_name = self._get_property_value(record, 'Identifier') or self._get_property_value(record, 'Name')
@@ -293,7 +293,7 @@ class DSXParser:
         return None
 
     def _get_property_value(self, element: ET.Element, property_name: str) -> Optional[str]:
-        """Get property value from DESExport element."""
+        """Get property value from DSExport element."""
         # Try as attribute first
         if element.get(property_name):
             return element.get(property_name)
