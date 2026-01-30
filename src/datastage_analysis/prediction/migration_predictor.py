@@ -42,6 +42,7 @@ class MigrationPrediction:
     recommendations: List[str]
     automation_blockers: List[str]
     glue_features_needed: List[str]
+    unknown_stages: List[str] = field(default_factory=list)  # Unrecognized DataStage stages
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -56,6 +57,7 @@ class MigrationPrediction:
             'recommendations': self.recommendations,
             'automation_blockers': self.automation_blockers,
             'glue_features_needed': self.glue_features_needed,
+            'unknown_stages': self.unknown_stages,
         }
 
 
@@ -72,6 +74,8 @@ class BatchPredictionReport:
     critical_risk_jobs: List[str]
     common_blockers: Dict[str, int]
     glue_infrastructure_needs: Dict[str, int]
+    unknown_stages: Dict[str, int] = field(default_factory=dict)  # Unknown stage types with counts
+    jobs_with_unknown_stages: List[str] = field(default_factory=list)  # Jobs containing unknown stages
 
 
 class MigrationPredictor:
@@ -209,6 +213,14 @@ class MigrationPredictor:
         # Identify Glue features needed
         glue_features = self._identify_glue_features(stages, job_pattern)
 
+        # Get unknown stages from analysis
+        unknown_stages = stage_analysis.get('unknown_stage_types', [])
+
+        # Add warning for unknown stages
+        if unknown_stages:
+            risk_factors.append(f"Unknown stage types: {', '.join(unknown_stages)}")
+            recommendations.append(f"⚠️ Review unknown stages: {', '.join(unknown_stages)}")
+
         return MigrationPrediction(
             job_name=job_pattern.job_name,
             category=category,
@@ -220,6 +232,7 @@ class MigrationPredictor:
             recommendations=recommendations,
             automation_blockers=blockers,
             glue_features_needed=glue_features,
+            unknown_stages=unknown_stages,
         )
 
     def predict_batch(self, patterns: List[Any],
@@ -253,7 +266,18 @@ class MigrationPredictor:
         fully_supported = sum(1 for t in stage_types if t in self.FULLY_SUPPORTED_STAGES)
         partially_supported = sum(1 for t in stage_types if t in self.PARTIALLY_SUPPORTED_STAGES)
         manual_required = sum(1 for t in stage_types if t in self.MANUAL_STAGES)
-        unknown = len(stage_types) - fully_supported - partially_supported - manual_required
+
+        # Identify unknown/unrecognized stage types
+        all_known_stages = (
+            self.FULLY_SUPPORTED_STAGES |
+            self.PARTIALLY_SUPPORTED_STAGES |
+            self.MANUAL_STAGES
+        )
+        unknown_stage_types = [
+            t for t in stage_types
+            if t not in all_known_stages and t != 'Unknown' and t != ''
+        ]
+        unknown = len(unknown_stage_types)
 
         total = len(stage_types) or 1  # Avoid division by zero
 
@@ -263,6 +287,7 @@ class MigrationPredictor:
             'partially_supported': partially_supported,
             'manual_required': manual_required,
             'unknown': unknown,
+            'unknown_stage_types': list(set(unknown_stage_types)),  # Unique unknown types
             'automation_ratio': (fully_supported + partially_supported * 0.5) / total,
             'stage_types': stage_types,
             'unique_types': list(set(stage_types)),
@@ -553,6 +578,15 @@ class MigrationPredictor:
             for feature in p.glue_features_needed:
                 infra_counts[feature] = infra_counts.get(feature, 0) + 1
 
+        # Count unknown/unrecognized stage types
+        unknown_stage_counts = {}
+        jobs_with_unknown = []
+        for p in predictions:
+            if p.unknown_stages:
+                jobs_with_unknown.append(p.job_name)
+                for stage_type in p.unknown_stages:
+                    unknown_stage_counts[stage_type] = unknown_stage_counts.get(stage_type, 0) + 1
+
         return BatchPredictionReport(
             total_jobs=len(predictions),
             auto_count=auto_count,
@@ -564,6 +598,8 @@ class MigrationPredictor:
             critical_risk_jobs=critical_risk,
             common_blockers=dict(sorted(blocker_counts.items(), key=lambda x: -x[1])[:10]),
             glue_infrastructure_needs=dict(sorted(infra_counts.items(), key=lambda x: -x[1])),
+            unknown_stages=dict(sorted(unknown_stage_counts.items(), key=lambda x: -x[1])),
+            jobs_with_unknown_stages=jobs_with_unknown,
         )
 
     def calibrate(self, actual_results: List[Dict]):
