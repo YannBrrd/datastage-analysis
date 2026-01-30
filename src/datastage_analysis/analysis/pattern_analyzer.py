@@ -27,6 +27,26 @@ class JobPattern:
     
 class PatternAnalyzer:
     """Analyzes jobs to identify patterns and migration complexity."""
+
+    def analyze_jobs(self, jobs: List[Any]) -> List[JobPattern]:
+        """
+        Analyze multiple jobs to extract patterns.
+
+        Args:
+            jobs: List of job objects or dicts with 'name' and 'structure' keys
+
+        Returns:
+            List of JobPattern objects
+        """
+        patterns = []
+        for job in jobs:
+            try:
+                pattern = self.analyze_job(job)
+                patterns.append(pattern)
+            except Exception as e:
+                job_name = getattr(job, 'name', None) or job.get('name', 'unknown')
+                logger.warning(f"Failed to analyze job {job_name}: {e}")
+        return patterns
     
     # Stage type categories for migration
     SOURCE_STAGES = {
@@ -132,7 +152,13 @@ class PatternAnalyzer:
 
     def analyze_job(self, job) -> JobPattern:
         """Analyze a single job to extract patterns."""
-        structure = job.structure
+        # Handle both dict and object inputs
+        if isinstance(job, dict):
+            structure = job.get('structure', {})
+            job_name = job.get('name', 'unknown')
+        else:
+            structure = job.structure
+            job_name = job.name
         
         # Extract stage types
         stages = structure.get('stages', [])
@@ -154,7 +180,7 @@ class PatternAnalyzer:
         category = self._categorize_for_migration(sources, targets, transforms, complexity)
         
         return JobPattern(
-            job_name=job.name,
+            job_name=job_name,
             source_types=list(set(sources)),
             target_types=list(set(targets)),
             transformation_types=list(set(transforms)),
