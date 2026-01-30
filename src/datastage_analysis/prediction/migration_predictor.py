@@ -128,6 +128,13 @@ class MigrationPredictor:
         'CCustomInput', 'CCustomOutput',
         'CSeqInput', 'CSeqOutput',
         'CHashedInput', 'CHashedOutput',
+        # Job Sequencer activities (orchestration, handled by Step Functions/Workflows)
+        'CJSJobActivity', 'CJSActivityInput', 'CJSActivityOutput',
+        'CJSUserVarsActivity', 'CJSEndLoopActivity', 'CJSStartLoopActivity',
+        'CJSCondition', 'CJSExecCmdActivity', 'CJSSequencer',
+        'CJSTerminatorActivity', 'CJSExceptionHandler', 'CJSWaitFileActivity',
+        # Container/shared stage elements
+        'CContainerStage', 'CStdPin', 'CStdOutput', 'CStdInput',
     }
 
     # Known problematic patterns
