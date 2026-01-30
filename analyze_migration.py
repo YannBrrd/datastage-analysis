@@ -410,6 +410,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
     # Build mappings for group identifiers
     job_to_duplicate_group: Dict[str, str] = {}
     job_to_similarity_cluster: Dict[str, str] = {}
+    job_to_pattern_family: Dict[str, str] = {}
 
     if commonality:
         # Map jobs to duplicate groups (use group index as ID)
@@ -424,6 +425,11 @@ def export_csv(results: Dict[str, Any], output_path: str):
             for job_name in cluster.job_names:
                 job_to_similarity_cluster[job_name] = cluster_id
 
+        # Map jobs to pattern families
+        for family in commonality.pattern_families:
+            for job_name in family.job_names:
+                job_to_pattern_family[job_name] = family.pattern_name
+
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
 
@@ -437,6 +443,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
             'risk_level',
             'duplicate_group',
             'similarity_cluster',
+            'pattern_family',
             'risk_factors',
             'automation_blockers',
             'glue_features_needed',
@@ -456,6 +463,7 @@ def export_csv(results: Dict[str, Any], output_path: str):
                 pred.risk_level.value,
                 job_to_duplicate_group.get(pred.job_name, ""),
                 job_to_similarity_cluster.get(pred.job_name, ""),
+                job_to_pattern_family.get(pred.job_name, ""),
                 "; ".join(pred.risk_factors),
                 "; ".join(pred.automation_blockers),
                 "; ".join(pred.glue_features_needed),
