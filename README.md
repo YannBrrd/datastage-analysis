@@ -66,20 +66,55 @@ export AWS_PROFILE=your_profile
 ### Usage
 
 ```bash
-# Place DSX files in data/ directory
+# Place DSX files in data/ directory (supports .dsx and .dsx.gz)
 cp /path/to/your/*.dsx data/
+cp /path/to/your/*.dsx.gz data/
 
-# Run full analysis pipeline
+# Quick migration analysis (no LLM, instant results)
+python analyze_migration.py ./data
+
+# Export analysis to CSV
+python analyze_migration.py ./data -o migration_report.csv
+
+# Export to JSON with verbose output
+python analyze_migration.py ./data -f json -o report.json -v
+
+# Run full pipeline with LLM validation
 python main.py
 
 # Run without LLM (local analysis only)
 python main.py --skip-genai
 
-# Generate Glue scripts for analyzed jobs
-python -m datastage_analysis.generators.glue_generator
-
 # View interactive report
 streamlit run output/app.py
+```
+
+### Migration Analyzer CLI
+
+The `analyze_migration.py` script provides instant classification of your DataStage jobs:
+
+```
+$ python analyze_migration.py ./data
+
+📁 Found 120 .dsx and 30 .dsx.gz files (total: 150)
+------------------------------------------------------------
+
+============================================================
+📊 MIGRATION ANALYSIS REPORT
+============================================================
+
+📈 SUMMARY
+   Total Jobs Analyzed: 150
+
+   Migration Categories:
+   🟢 AUTO      :   52 ( 34.7%) |█████████████████░░░░░░░░░░░░░░░|
+   🟡 SEMI-AUTO :   68 ( 45.3%) |██████████████████████░░░░░░░░░░|
+   🔴 MANUAL    :   30 ( 20.0%) |██████████░░░░░░░░░░░░░░░░░░░░░░|
+
+   Average Success Probability: 82.5%
+   Total Estimated Effort: 1,245 hours
+
+✨ 34.7% of jobs can be automatically migrated to AWS Glue
 ```
 
 ## 📁 Project Structure
