@@ -16,9 +16,11 @@ import sys
 import json
 import csv
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import asdict
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -33,6 +35,7 @@ from datastage_analysis.prediction.migration_predictor import (
     MigrationRisk,
     MigrationPriorityRanker,
 )
+from datastage_analysis.config import get_config
 
 
 class MigrationAnalyzer:
@@ -50,6 +53,17 @@ class MigrationAnalyzer:
             import logging
             logging.basicConfig(level=logging.DEBUG)
             logging.getLogger('datastage_analysis').setLevel(logging.DEBUG)
+
+    def _parse_file(self, dsx_file: Path) -> Tuple[Optional[Any], Optional[Dict]]:
+        """Parse a single DSX file. Thread-safe worker function."""
+        try:
+            parser = DSXParser()  # Create new parser instance per thread
+            job = parser._parse_single_job(dsx_file)
+            if job is None:
+                return None, {"file": str(dsx_file), "error": "Failed to parse file"}
+            return job, None
+        except Exception as e:
+            return None, {"file": str(dsx_file), "error": str(e)}
 
     def analyze_directory(self, directory: str) -> Dict[str, Any]:
         """
@@ -76,71 +90,74 @@ class MigrationAnalyzer:
             print(f"⚠️  No DataStage files found in {directory}")
             return {"error": "No DataStage files found", "predictions": [], "summary": {}}
 
+        # Get config for parallel workers
+        config = get_config()
+        max_workers = config.get('parser', 'max_workers', default=4)
+
         print(f"📁 Found {len(dsx_files)} .dsx, {len(dsx_gz_files)} .dsx.gz, {len(xml_files)} .xml, {len(xml_gz_files)} .xml.gz (total: {len(all_files)})")
+        print(f"🚀 Parsing with {max_workers} parallel workers")
         print("-" * 60)
 
-        # Parse and analyze each file
+        # Parse files in parallel
         predictions: List[MigrationPrediction] = []
         structures: Dict[str, Dict] = {}
         errors: List[Dict] = []
         total_files = len(all_files)
+        completed = 0
+        lock = threading.Lock()
 
-        for i, dsx_file in enumerate(all_files, 1):
-            # Progress indicator
-            progress_pct = int((i / total_files) * 100)
-            bar_width = 30
-            filled = int(bar_width * i / total_files)
-            bar = "█" * filled + "░" * (bar_width - filled)
-            print(f"\r⏳ [{bar}] {progress_pct:3d}% ({i}/{total_files}) {dsx_file.name[:30]:<30}", end="", flush=True)
+        def update_progress(filename: str):
+            nonlocal completed
+            with lock:
+                completed += 1
+                progress_pct = int((completed / total_files) * 100)
+                bar_width = 30
+                filled = int(bar_width * completed / total_files)
+                bar = "█" * filled + "░" * (bar_width - filled)
+                print(f"\r⏳ [{bar}] {progress_pct:3d}% ({completed}/{total_files}) {filename[:30]:<30}", end="", flush=True)
 
-            if self.verbose:
-                print(f"\n[{i}/{total_files}] Analyzing: {dsx_file.name}")
+        # Phase 1: Parallel file parsing
+        parsed_jobs = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(self._parse_file, f): f for f in all_files}
 
-            try:
-                # Parse DSX file using the parser's internal method
-                job = self.parser._parse_single_job(dsx_file)
+            for future in as_completed(future_to_file):
+                dsx_file = future_to_file[future]
+                update_progress(dsx_file.name)
 
-                if job is None:
-                    errors.append({
-                        "file": str(dsx_file),
-                        "error": "Failed to parse file"
-                    })
+                job, error = future.result()
+                if error:
+                    errors.append(error)
                     if self.debug:
-                        print(f"  ❌ Failed to parse: {dsx_file.name}")
-                    continue
+                        print(f"\n  ❌ {error['file']}: {error['error']}")
+                elif job:
+                    parsed_jobs.append((dsx_file, job))
+                    if self.debug:
+                        stages = job.structure.get('stages', [])
+                        jobs_in_struct = job.structure.get('jobs', [])
+                        print(f"\n  📄 {dsx_file.name}: {len(stages)} stages, {len(jobs_in_struct)} sub-jobs")
 
-                if self.debug:
-                    stages = job.structure.get('stages', [])
-                    jobs_in_struct = job.structure.get('jobs', [])
-                    print(f"  📄 {dsx_file.name}: {len(stages)} stages, {len(jobs_in_struct)} sub-jobs")
+        # Phase 2: Sequential analysis (fast, needs shared state)
+        print(f"\r⏳ Analyzing {len(parsed_jobs)} parsed jobs..." + " " * 40, end="", flush=True)
 
-                job_name = job.name
-                structure = job.structure
-                structures[job_name] = structure
+        for dsx_file, job in parsed_jobs:
+            job_name = job.name
+            structure = job.structure
+            structures[job_name] = structure
 
-                # Handle multi-job DSX files
-                jobs_in_file = structure.get('jobs', [])
-                if jobs_in_file and len(jobs_in_file) > 1:
-                    # Process each job separately
-                    for sub_job in jobs_in_file:
-                        sub_name = sub_job.get('name', job_name)
-                        sub_structure = {
-                            'name': sub_name,
-                            'stages': sub_job.get('stages', []),
-                            'links': sub_job.get('links', []),
-                        }
-                        self._analyze_single_job(sub_name, sub_structure, predictions, structures)
-                else:
-                    # Single job
-                    self._analyze_single_job(job_name, structure, predictions, structures)
-
-            except Exception as e:
-                errors.append({
-                    "file": str(dsx_file),
-                    "error": str(e)
-                })
-                if self.verbose:
-                    print(f"  ❌ Error: {e}")
+            # Handle multi-job DSX files
+            jobs_in_file = structure.get('jobs', [])
+            if jobs_in_file and len(jobs_in_file) > 1:
+                for sub_job in jobs_in_file:
+                    sub_name = sub_job.get('name', job_name)
+                    sub_structure = {
+                        'name': sub_name,
+                        'stages': sub_job.get('stages', []),
+                        'links': sub_job.get('links', []),
+                    }
+                    self._analyze_single_job(sub_name, sub_structure, predictions, structures)
+            else:
+                self._analyze_single_job(job_name, structure, predictions, structures)
 
         # Clear progress bar and show completion
         print(f"\r✅ Parsed {total_files} files, found {len(predictions)} jobs" + " " * 40)
