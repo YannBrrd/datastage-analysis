@@ -135,6 +135,8 @@ class MigrationPredictor:
         'CJSTerminatorActivity', 'CJSExceptionHandler', 'CJSWaitFileActivity',
         # Container/shared stage elements
         'CContainerStage', 'CStdPin', 'CStdOutput', 'CStdInput',
+        # Other metadata
+        'CUnattachedDst', 'CRecord',
     }
 
     # Known problematic patterns
