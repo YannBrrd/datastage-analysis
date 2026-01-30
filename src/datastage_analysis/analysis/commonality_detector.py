@@ -166,26 +166,30 @@ class CommonalityDetector:
         # Phase 5: Identify pattern families
         pattern_families = self._identify_pattern_families(job_sequences)
 
-        # Calculate effective unique jobs and effort reduction
-        # Jobs in exact duplicate groups count as 1
-        jobs_in_dup_groups = sum(g.count - 1 for g in exact_groups)  # -1 because we keep one
+        # Calculate effective unique jobs (number of distinct patterns to implement)
+        # This is the number of unique fingerprints
+        effective_unique = len(unique_patterns)
 
-        # Jobs in similarity clusters (excluding overlaps with exact dups)
-        clustered_jobs = set()
-        for cluster in similarity_clusters:
-            clustered_jobs.update(cluster.job_names)
+        # Calculate realistic effort reduction
+        # Model:
+        #   - Without deduplication: each job = full effort (e.g., 8 hours)
+        #   - With deduplication: 1 template per pattern + parameterization per variant
+        #   - Template effort: 8 hours, Parameterization: 1 hour per variant
+        BASE_EFFORT_HOURS = 8.0  # Full migration effort per unique job
+        PARAM_EFFORT_HOURS = 1.0  # Effort to parameterize a duplicate
 
-        # Effective unique = total - duplicates saved - similar jobs saved
-        effective_unique = total_jobs - jobs_in_dup_groups
-
-        # Further reduction from similarity clusters (estimate 80% reduction per cluster)
-        cluster_reduction = sum(
-            max(0, c.count - 1) * 0.8
-            for c in similarity_clusters
+        effort_without_dedup = total_jobs * BASE_EFFORT_HOURS
+        effort_with_dedup = (
+            effective_unique * BASE_EFFORT_HOURS +  # Build each unique template
+            (total_jobs - effective_unique) * PARAM_EFFORT_HOURS  # Parameterize duplicates
         )
 
-        effective_unique = max(1, effective_unique - int(cluster_reduction))
-        effort_reduction = ((total_jobs - effective_unique) / total_jobs) * 100 if total_jobs > 0 else 0
+        # Calculate reduction percentage, cap at 95% (never promise 100%)
+        if effort_without_dedup > 0:
+            effort_reduction = ((effort_without_dedup - effort_with_dedup) / effort_without_dedup) * 100
+            effort_reduction = min(effort_reduction, 95.0)  # Cap at 95%
+        else:
+            effort_reduction = 0.0
 
         return CommonalityReport(
             total_jobs=total_jobs,

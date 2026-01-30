@@ -151,7 +151,6 @@ class MigrationAnalyzer:
         # Rank jobs for migration priority
         ranker = MigrationPriorityRanker()
         ranked_jobs = ranker.rank_jobs(predictions)
-        waves = ranker.create_migration_waves(ranked_jobs, wave_size=50)
 
         # Analyze commonalities (duplicates, patterns)
         commonality_report = self.commonality_detector.analyze(structures)
@@ -160,7 +159,6 @@ class MigrationAnalyzer:
             "predictions": predictions,
             "summary": summary,
             "ranked_jobs": ranked_jobs,
-            "migration_waves": waves,
             "commonality": commonality_report,
             "errors": errors,
             "analyzed_at": datetime.now().isoformat(),
@@ -339,15 +337,6 @@ def print_report(results: Dict[str, Any]):
             print(f"   ... and {len(unknown_types) - 15} more types")
         print("   💡 Consider adding these to GLUE_COMPLEXITY mapping for better predictions")
 
-    # Migration waves
-    waves = results.get("migration_waves", [])
-    if waves:
-        print(f"\n📦 MIGRATION WAVES ({len(waves)} waves):")
-        for i, wave in enumerate(waves[:5], 1):
-            print(f"   Wave {i}: {len(wave)} jobs")
-        if len(waves) > 5:
-            print(f"   ... and {len(waves) - 5} more waves")
-
     # Top 10 jobs by priority
     ranked = results.get("ranked_jobs", [])
     if ranked:
@@ -416,6 +405,24 @@ def print_report(results: Dict[str, Any]):
 def export_csv(results: Dict[str, Any], output_path: str):
     """Export results to CSV."""
     predictions = results.get("predictions", [])
+    commonality = results.get("commonality")
+
+    # Build mappings for group identifiers
+    job_to_duplicate_group: Dict[str, str] = {}
+    job_to_similarity_cluster: Dict[str, str] = {}
+
+    if commonality:
+        # Map jobs to duplicate groups (use group index as ID)
+        for idx, group in enumerate(commonality.exact_duplicate_groups, 1):
+            group_id = f"DUP_{idx}"
+            for job_name in group.job_names:
+                job_to_duplicate_group[job_name] = group_id
+
+        # Map jobs to similarity clusters
+        for cluster in commonality.similarity_clusters:
+            cluster_id = f"SIM_{cluster.cluster_id}"
+            for job_name in cluster.job_names:
+                job_to_similarity_cluster[job_name] = cluster_id
 
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -428,6 +435,8 @@ def export_csv(results: Dict[str, Any], output_path: str):
             'success_probability',
             'estimated_hours',
             'risk_level',
+            'duplicate_group',
+            'similarity_cluster',
             'risk_factors',
             'automation_blockers',
             'glue_features_needed',
@@ -445,6 +454,8 @@ def export_csv(results: Dict[str, Any], output_path: str):
                 f"{pred.success_probability:.2f}",
                 f"{pred.estimated_hours:.1f}",
                 pred.risk_level.value,
+                job_to_duplicate_group.get(pred.job_name, ""),
+                job_to_similarity_cluster.get(pred.job_name, ""),
                 "; ".join(pred.risk_factors),
                 "; ".join(pred.automation_blockers),
                 "; ".join(pred.glue_features_needed),
@@ -466,7 +477,6 @@ def export_json(results: Dict[str, Any], output_path: str):
         "summary": results.get("summary", {}),
         "predictions": [p.to_dict() for p in results.get("predictions", [])],
         "ranked_jobs": results.get("ranked_jobs", []),
-        "migration_waves": results.get("migration_waves", []),
         "commonality": commonality_dict,
         "errors": results.get("errors", []),
         "analyzed_at": results.get("analyzed_at", ""),
