@@ -5,10 +5,12 @@ A high-performance, AI-powered system for analyzing 9000+ DataStage ETL jobs and
 ## 🎯 Key Features
 
 - **Predictive Migration**: Automatically classifies jobs as AUTO/SEMI-AUTO/MANUAL
+- **Commonality Detection**: Identifies duplicate/similar jobs to reduce migration effort
 - **Code Generation**: Generates AWS Glue Python scripts from DataStage patterns
 - **Cost Optimization**: < $300 in LLM costs for 9000 jobs analysis
 - **High Automation**: 65-75% of jobs can be migrated automatically
 - **Infrastructure as Code**: Terraform templates for Glue resources
+- **Multi-format Support**: Handles .dsx, .dsx.gz, .xml, .xml.gz files
 
 ## 🏗️ Architecture
 
@@ -63,12 +65,36 @@ export ANTHROPIC_API_KEY=your_key_here
 export AWS_PROFILE=your_profile
 ```
 
+#### config.yaml
+
+Customize parser limits and prediction settings:
+
+```yaml
+# Parser settings
+parser:
+  max_file_size_mb: 510      # Max file size warning threshold
+  max_lines: 0               # 0 = unlimited parsing
+  max_workers: 4             # Parallel processing threads
+
+# Prediction settings
+prediction:
+  success_baseline: 0.85     # Base success probability
+  effort_factor: 1.0         # Effort multiplier
+
+# Glue generation settings
+glue:
+  glue_version: "4.0"
+  default_worker_type: "G.1X"
+  default_num_workers: 2
+```
+
 ### Usage
 
 ```bash
-# Place DSX files in data/ directory (supports .dsx and .dsx.gz)
+# Place DSX files in data/ directory (supports .dsx, .dsx.gz, .xml, .xml.gz)
 cp /path/to/your/*.dsx data/
 cp /path/to/your/*.dsx.gz data/
+cp /path/to/your/*.xml.gz data/
 
 # Quick migration analysis (no LLM, instant results)
 python analyze_migration.py ./data
@@ -78,6 +104,9 @@ python analyze_migration.py ./data -o migration_report.csv
 
 # Export to JSON with verbose output
 python analyze_migration.py ./data -f json -o report.json -v
+
+# Debug mode (shows parsing details)
+python analyze_migration.py ./data --debug
 
 # Run full pipeline with LLM validation
 python main.py
@@ -96,25 +125,45 @@ The `analyze_migration.py` script provides instant classification of your DataSt
 ```
 $ python analyze_migration.py ./data
 
-📁 Found 120 .dsx and 30 .dsx.gz files (total: 150)
+🔍 DataStage to AWS Glue Migration Analyzer
+   Analyzing: ./data
+
+📁 Found 0 .dsx, 47 .dsx.gz, 0 .xml, 5 .xml.gz (total: 52)
 ------------------------------------------------------------
+⏳ [██████████████████████████████] 100% (52/52) last_file.dsx.gz
+✅ Parsed 52 files, found 7049 jobs
 
 ============================================================
 📊 MIGRATION ANALYSIS REPORT
 ============================================================
 
 📈 SUMMARY
-   Total Jobs Analyzed: 150
+   Total Jobs Analyzed: 7049
 
    Migration Categories:
-   🟢 AUTO      :   52 ( 34.7%) |█████████████████░░░░░░░░░░░░░░░|
-   🟡 SEMI-AUTO :   68 ( 45.3%) |██████████████████████░░░░░░░░░░|
-   🔴 MANUAL    :   30 ( 20.0%) |██████████░░░░░░░░░░░░░░░░░░░░░░|
+   🟢 AUTO      : 2115 ( 30.0%) |███████████████░░░░░░░░░░░░░░░░░|
+   🟡 SEMI-AUTO : 3525 ( 50.0%) |█████████████████████████░░░░░░░|
+   🔴 MANUAL    : 1409 ( 20.0%) |██████████░░░░░░░░░░░░░░░░░░░░░░|
 
    Average Success Probability: 82.5%
-   Total Estimated Effort: 1,245 hours
+   Total Estimated Effort: 12,450 hours
 
-✨ 34.7% of jobs can be automatically migrated to AWS Glue
+📋 COMMONALITY ANALYSIS
+   Total Jobs: 7049
+   Unique Patterns: 892
+
+   🔁 Exact Duplicates: 342 jobs in 45 groups
+   🔗 Similar Jobs (>85%): 1205 jobs in 89 clusters
+
+   📂 Pattern Families (12):
+      - DB to File ETL: 523 jobs → jdbc_to_s3_etl
+      - File Processing: 312 jobs → s3_to_s3_etl
+      - Lookup Enrichment: 89 jobs → join_lookup_etl
+
+   💡 Effective Unique Jobs: 892 (vs 7049 total)
+   📉 Estimated Effort Reduction: 87.3%
+
+✨ 30.0% of jobs can be automatically migrated to AWS Glue
 ```
 
 ## 📁 Project Structure
@@ -122,16 +171,20 @@ $ python analyze_migration.py ./data
 ```
 datastage-analysis/
 ├── main.py                           # Pipeline orchestrator
+├── analyze_migration.py              # CLI migration analyzer
+├── config.yaml                       # Configuration settings
 ├── src/datastage_analysis/
+│   ├── config.py                    # Configuration loader
 │   ├── parsers/
-│   │   └── dsx_parser.py            # DSX/XML parsing
+│   │   └── dsx_parser.py            # DSX/XML parsing (.dsx, .dsx.gz, .xml, .xml.gz)
 │   ├── clustering/
 │   │   ├── structural_clusterer.py  # Hash-based clustering
 │   │   └── semantic_clusterer.py    # K-means semantic clustering
 │   ├── embeddings/
 │   │   └── semantic_embedder.py     # Sentence-transformers
 │   ├── analysis/
-│   │   └── pattern_analyzer.py      # Glue complexity scoring
+│   │   ├── pattern_analyzer.py      # Glue complexity scoring
+│   │   └── commonality_detector.py  # Duplicate/pattern detection
 │   ├── prediction/
 │   │   └── migration_predictor.py   # AUTO/SEMI/MANUAL classifier
 │   ├── generators/

@@ -548,6 +548,51 @@ Le prédicteur peut être calibré avec des résultats réels de migration pour 
 
 ---
 
+### 10. **CommonalityDetector** (`src/datastage_analysis/analysis/commonality_detector.py`)
+
+**Rôle** : Détecter les jobs dupliqués et similaires pour réduire l'effort de migration
+
+**Fonctionnalités** :
+- **Détection des doublons exacts** : Groupement par fingerprint structurel
+- **Détection des quasi-doublons** : Similarité Jaccard + LCS (seuil >85%)
+- **Clustering par patterns** : Identification des familles de jobs
+- **Estimation réduction d'effort** : Calcul du gain en cas de mutualisation
+
+**Algorithmes** :
+```python
+# Similarité combinée
+similarity = (
+    0.5 * jaccard_similarity +      # Similarité d'ensemble de stages
+    0.3 * length_similarity +        # Similarité de taille
+    0.2 * order_similarity           # Similarité d'ordre (LCS)
+)
+```
+
+**Outputs** :
+- `DuplicateGroup` : Groupes de jobs identiques
+- `SimilarityCluster` : Clusters de jobs similaires (>85%)
+- `PatternFamily` : Familles de patterns avec template Glue suggéré
+- `CommonalityReport` : Rapport complet avec réduction d'effort estimée
+
+**Exemple de résultat** :
+```
+📋 COMMONALITY ANALYSIS
+   Total Jobs: 7049
+   Unique Patterns: 892
+
+   🔁 Exact Duplicates: 342 jobs in 45 groups
+   🔗 Similar Jobs (>85%): 1205 jobs in 89 clusters
+
+   📂 Pattern Families:
+      - DB to File ETL: 523 jobs → jdbc_to_s3_etl
+      - File Processing: 312 jobs → s3_to_s3_etl
+
+   💡 Effective Unique Jobs: 892 (vs 7049 total)
+   📉 Estimated Effort Reduction: 87.3%
+```
+
+---
+
 ## 🔮 Évolutions Futures
 
 ### Court Terme (v2.1)
