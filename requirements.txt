@@ -11,3 +11,4 @@ asyncio-mqtt  # if needed, but maybe not
 aiofiles
 hf_xet
 plotly
+jinja2  # Template engine for Glue script generation

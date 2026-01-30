@@ -1,0 +1,218 @@
+{# Template for CDC/Incremental processing with Glue Bookmarks #}
+"""
+AWS Glue ETL Job: {{ job_name }}
+Pattern: CDC/Incremental Processing
+
+Migrated from DataStage: {{ original_job_name }}
+Generated: {{ generation_timestamp }}
+
+NOTE: This template uses Glue Job Bookmarks for incremental processing.
+For SCD Type 2, consider using Delta Lake or Apache Iceberg.
+"""
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from datetime import datetime
+
+# Initialize
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME',
+    'SOURCE_PATH',
+    'TARGET_PATH',
+    'BOOKMARK_KEY',
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+logger = glueContext.get_logger()
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+SOURCE_PATH = args['SOURCE_PATH']
+TARGET_PATH = args['TARGET_PATH']
+BOOKMARK_KEY = args['BOOKMARK_KEY']  # Column for incremental tracking
+
+# CDC configuration
+PRIMARY_KEY = "{{ primary_key | default('id') }}"
+HASH_COLUMNS = {{ hash_columns | default(['*']) | tojson }}  # Columns for change detection
+
+logger.info(f"CDC Job: {SOURCE_PATH} -> {TARGET_PATH}")
+logger.info(f"Bookmark key: {BOOKMARK_KEY}, Primary key: {PRIMARY_KEY}")
+
+# ============================================================================
+# READ SOURCE (with Job Bookmarks)
+# ============================================================================
+
+source_dyf = glueContext.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={
+        "paths": [SOURCE_PATH],
+        "recurse": True,
+    },
+    format="{{ source_format | default('parquet') }}",
+    transformation_ctx="source_ctx",
+    # Job bookmark configuration
+    additional_options={
+        "jobBookmarkKeys": [BOOKMARK_KEY],
+        "jobBookmarkKeysSortOrder": "asc"
+    }
+)
+
+source_df = source_dyf.toDF()
+new_record_count = source_df.count()
+logger.info(f"Read {new_record_count} new/changed records from source")
+
+if new_record_count == 0:
+    logger.info("No new records to process")
+    job.commit()
+    sys.exit(0)
+
+# ============================================================================
+# CHANGE DETECTION
+# ============================================================================
+
+# Generate hash for change detection
+if HASH_COLUMNS == ['*']:
+    hash_cols = source_df.columns
+else:
+    hash_cols = HASH_COLUMNS
+
+# Remove primary key and metadata columns from hash
+hash_cols = [c for c in hash_cols if c not in [PRIMARY_KEY, BOOKMARK_KEY, '_load_timestamp']]
+
+source_df = source_df.withColumn(
+    "_record_hash",
+    F.sha2(F.concat_ws("|", *[F.coalesce(F.col(c).cast("string"), F.lit("")) for c in hash_cols]), 256)
+)
+
+# Add CDC metadata
+source_df = source_df.withColumn("_cdc_timestamp", F.current_timestamp())
+source_df = source_df.withColumn("_cdc_operation", F.lit("UPSERT"))
+
+# ============================================================================
+# READ EXISTING TARGET (for merge)
+# ============================================================================
+
+try:
+    existing_dyf = glueContext.create_dynamic_frame.from_options(
+        connection_type="s3",
+        connection_options={
+            "paths": [TARGET_PATH],
+        },
+        format="{{ target_format | default('parquet') }}",
+        transformation_ctx="existing_ctx"
+    )
+    existing_df = existing_dyf.toDF()
+    target_exists = True
+    logger.info(f"Existing target has {existing_df.count()} records")
+except Exception as e:
+    logger.info(f"No existing target found, will create new: {e}")
+    existing_df = None
+    target_exists = False
+
+# ============================================================================
+# MERGE LOGIC
+# ============================================================================
+
+if target_exists and existing_df is not None:
+    # Identify changes by comparing hashes
+    new_records = source_df.alias("new")
+    old_records = existing_df.alias("old")
+
+    # Find records to INSERT (not in target)
+    inserts = new_records.join(
+        old_records,
+        on=new_records[PRIMARY_KEY] == old_records[PRIMARY_KEY],
+        how="left_anti"
+    )
+    insert_count = inserts.count()
+    logger.info(f"New records to INSERT: {insert_count}")
+
+    # Find records to UPDATE (in target, hash changed)
+    updates = new_records.join(
+        old_records,
+        on=(new_records[PRIMARY_KEY] == old_records[PRIMARY_KEY]) &
+           (new_records["_record_hash"] != old_records["_record_hash"]),
+        how="inner"
+    ).select(new_records["*"])
+    update_count = updates.count()
+    logger.info(f"Records to UPDATE: {update_count}")
+
+    # Find unchanged records (keep from existing)
+    unchanged = old_records.join(
+        new_records,
+        on=old_records[PRIMARY_KEY] == new_records[PRIMARY_KEY],
+        how="left_anti"
+    )
+    unchanged_count = unchanged.count()
+    logger.info(f"Unchanged records: {unchanged_count}")
+
+    # Combine all records
+    # Updated records replace old versions
+    records_to_keep = old_records.join(
+        source_df.select(PRIMARY_KEY),
+        on=old_records[PRIMARY_KEY] == source_df[PRIMARY_KEY],
+        how="left_anti"
+    )
+
+    output_df = records_to_keep.union(source_df)
+
+else:
+    # First load - all records are inserts
+    output_df = source_df
+    logger.info("Initial load - all records are new")
+
+# ============================================================================
+# WRITE OUTPUT
+# ============================================================================
+
+{% if use_delta_lake %}
+# Delta Lake output (recommended for production CDC)
+output_df.write \
+    .format("delta") \
+    .mode("overwrite") \
+    .option("overwriteSchema", "true") \
+    .save(TARGET_PATH)
+{% else %}
+# Standard Parquet output (full replace per partition)
+output_dyf = DynamicFrame.fromDF(output_df, glueContext, "output_dyf")
+
+glueContext.write_dynamic_frame.from_options(
+    frame=output_dyf,
+    connection_type="s3",
+    connection_options={
+        "path": TARGET_PATH,
+        {% if partition_keys %}
+        "partitionKeys": {{ partition_keys | tojson }},
+        {% endif %}
+    },
+    format="{{ target_format | default('parquet') }}",
+    format_options={
+        "compression": "snappy",
+    },
+    transformation_ctx="output_ctx"
+)
+{% endif %}
+
+final_count = output_df.count()
+logger.info(f"Wrote {final_count} total records to target")
+
+# ============================================================================
+# COMPLETE
+# ============================================================================
+
+job.commit()
+logger.info("CDC job completed successfully")

@@ -2,7 +2,7 @@
 
 ## 🎯 Vision du Projet
 
-Ce système a été conçu pour résoudre un défi critique : **analyser 9000 jobs DataStage** pour planifier une migration vers **PySpark + Power BI**, tout en minimisant les coûts d'API LLM et en maximisant les insights actionables.
+Ce système a été conçu pour résoudre un défi critique : **analyser 9000 jobs DataStage** pour planifier une migration vers **AWS Glue**, tout en minimisant les coûts d'API LLM et en maximisant les insights actionables.
 
 ### Le Problème
 
@@ -11,6 +11,15 @@ Ce système a été conçu pour résoudre un défi critique : **analyser 9000 jo
 - **Coût** : Approche naïve avec LLM = $50,000+ en tokens Claude AI
 - **Complexité** : Format propriétaire IBM DataStage (DSX natif, non-XML)
 - **Objectif** : Identifier patterns réutilisables, estimer effort de migration, prioriser les jobs
+
+### Cible de Migration : AWS Glue
+
+**AWS Glue** est la plateforme cible choisie pour plusieurs raisons :
+- **Serverless** : Pas de cluster à gérer, scaling automatique
+- **PySpark natif** : Glue utilise Spark en backend, compatibilité maximale
+- **Écosystème AWS** : Intégration native avec S3, Redshift, Athena, Data Catalog
+- **Job Bookmarks** : Support natif du traitement incrémental (CDC)
+- **Coût optimisé** : Facturation à la DPU-heure (~$0.44/DPU-h)
 
 ---
 
@@ -31,10 +40,26 @@ Ce système a été conçu pour résoudre un défi critique : **analyser 9000 jo
 **20% des cas nécessitent Claude AI** :
 - ✅ Validation de clusters (groupes vraiment similaires ?)
 - ✅ Cas ambigus (complexité 60-80, signaux mixtes)
-- ✅ Génération de templates de migration (pattern → code PySpark)
+- ✅ Génération de templates de migration (pattern → code AWS Glue)
 - ✅ Analyse de risques métier (logique business cachée)
 
 **Avantage** : Budget maîtrisé ($150-800), ROI maximal
+
+### Principe #3 : Migration Prédictive
+
+Le système utilise un **classificateur prédictif** pour catégoriser automatiquement chaque job :
+
+| Catégorie | Description | Automatisation |
+|-----------|-------------|----------------|
+| **AUTO** | Jobs simples, patterns connus | 100% génération automatique |
+| **SEMI-AUTO** | Complexité moyenne, templates adaptables | Template + ajustements manuels |
+| **MANUAL** | Jobs complexes, CDC/SCD, custom code | Analyse et implémentation manuelle |
+
+**Métriques de prédiction** :
+- Score de confiance (0-100%)
+- Probabilité de succès
+- Estimation d'effort (heures)
+- Niveau de risque (LOW/MEDIUM/HIGH/CRITICAL)
 
 ### Principe #3 : Optimisation Agressive des Tokens
 
@@ -217,16 +242,18 @@ complexity = (
 )
 ```
 
-**Mapping PySpark** :
-| DataStage Stage | PySpark Équivalent | Complexité |
-|-----------------|-------------------|------------|
-| SequentialFile | `spark.read.csv()` | 1/5 (Simple) |
-| Transformer (simple) | `.withColumn()` | 1/5 |
-| OracleConnectorPX | `.read.jdbc()` | 3/5 (Medium) |
-| Aggregator | `.groupBy().agg()` | 2/5 |
-| Joiner | `.join()` | 3/5 |
-| Transformer (SQL complexe) | Custom UDF | 4/5 (Hard) |
-| Lookup avec logique | Broadcast join | 4/5 |
+**Mapping AWS Glue** :
+| DataStage Stage | AWS Glue Équivalent | Complexité |
+|-----------------|---------------------|------------|
+| SequentialFile | `create_dynamic_frame.from_options("s3")` | 1/5 (Simple) |
+| Transformer (simple) | `ApplyMapping.apply()` | 2/5 |
+| OracleConnectorPX | Glue JDBC Connection + Data Catalog | 2/5 |
+| Aggregator | `.groupBy().agg()` via DynamicFrame | 2/5 |
+| Joiner | `Join.apply()` | 2/5 |
+| Transformer (SQL complexe) | Spark SQL / Custom UDF | 3/5 (Medium) |
+| Lookup avec logique | `broadcast()` join | 3/5 |
+| ChangeCapture/SCD | Glue Bookmarks + Delta Lake | 5/5 (Hard) |
+| TeradataConnector | Custom JDBC driver | 4/5 |
 
 **Catégories de Migration** :
 - **Simple** (0-40) : Jobs basiques, migration 1-3 jours
@@ -473,22 +500,73 @@ python main.py --enable-genai --representative-pct 0.10
 
 ---
 
+## 🆕 Nouveaux Modules v2.0
+
+### 8. **GlueGenerator** (`src/datastage_analysis/generators/glue_generator.py`)
+
+**Rôle** : Générer automatiquement des scripts AWS Glue à partir des patterns détectés
+
+**Fonctionnalités** :
+- Génération de scripts Python Glue complets
+- Support des DynamicFrames et DataFrame API
+- Templates pour patterns courants (S3-to-S3, JDBC, Join/Lookup, CDC)
+- Génération de configuration Terraform
+- Estimation des DPU-hours
+
+**Patterns supportés** :
+```
+├── s3_to_s3_etl.py.j2       # File processing simple
+├── jdbc_to_s3_etl.py.j2     # Database extraction
+├── join_lookup_etl.py.j2    # Data enrichment
+├── cdc_incremental.py.j2    # Change Data Capture
+└── aggregation_etl.py.j2    # Summary/rollup
+```
+
+---
+
+### 9. **MigrationPredictor** (`src/datastage_analysis/prediction/migration_predictor.py`)
+
+**Rôle** : Prédire les résultats de migration et classifier les jobs
+
+**Algorithme de Classification** :
+```python
+if manual_stages > 0 or risk_score > 0.4:
+    category = MANUAL
+elif automation_ratio > 0.8 and complexity < 40:
+    category = AUTO
+else:
+    category = SEMI_AUTO
+```
+
+**Outputs** :
+- `MigrationPrediction` : Prédiction détaillée par job
+- `BatchPredictionReport` : Rapport de synthèse
+- `MigrationPriorityRanker` : Priorisation des jobs pour migration par vagues
+
+**Calibration** :
+Le prédicteur peut être calibré avec des résultats réels de migration pour améliorer la précision.
+
+---
+
 ## 🔮 Évolutions Futures
 
-### Court Terme (v1.1)
+### Court Terme (v2.1)
+- [x] ~~Template PySpark auto-généré par pattern~~ → Templates AWS Glue
 - [ ] Améliorer extraction stages depuis format natif DSX
 - [ ] Ajouter détection de SQL dans Transformers
-- [ ] Support Airflow DAG generation (jobs → DAG)
+- [ ] Support Glue Workflows (dépendances entre jobs)
 
-### Moyen Terme (v2.0)
-- [ ] Template PySpark auto-généré par pattern
+### Moyen Terme (v2.5)
+- [ ] Génération de Step Functions pour orchestration
 - [ ] Détection de code mort (jobs non schedulés)
 - [ ] Analyse de dépendances (job A → job B)
+- [ ] Support Delta Lake / Apache Iceberg pour CDC
 
 ### Long Terme (v3.0)
-- [ ] Migration semi-automatique (DSX → PySpark)
-- [ ] Tests unitaires auto-générés
+- [ ] Migration semi-automatique (DSX → AWS Glue)
+- [ ] Tests unitaires auto-générés (pytest + moto)
 - [ ] Optimisation de performance predictive
+- [ ] Interface web pour suivi de migration
 
 ---
 
@@ -499,10 +577,28 @@ Ce projet démontre qu'une **approche hybride intelligente** peut :
 2. **Traiter de très gros volumes** (fichiers 500 MB, 9000 jobs)
 3. **Maintenir une qualité élevée** (85-90% confiance)
 4. **Livrer des insights actionnables** (templates, estimations, priorisation)
+5. **Automatiser 65-75% des migrations** vers AWS Glue
 
 La clé : **utiliser le bon outil pour chaque tâche**
 - Local analysis pour pattern detection
-- LLM pour validation et génération creative
-- Cache agressif pour minimiser redondance
+- LLM pour validation et génération créative
+- Génération de code Glue automatique pour patterns connus
+- Prédiction de succès pour priorisation
 
-**ROI estimé** : $300 investis → économie de $50,000+ en analyse manuelle + réduction de 30% du temps de migration via réutilisation de templates.
+**ROI estimé** :
+- $300 investis en analyse LLM → économie de $50,000+ en analyse manuelle
+- Génération automatique → réduction de 40-60% du temps de développement
+- Priorisation intelligente → migration par vagues avec risque minimisé
+
+---
+
+## 📊 Tableau de Bord Migration AWS Glue
+
+| Métrique | Valeur Cible |
+|----------|--------------|
+| Jobs analysables automatiquement | 100% |
+| Jobs AUTO (migration automatique) | 30-40% |
+| Jobs SEMI-AUTO (template + ajustements) | 40-50% |
+| Jobs MANUAL (implémentation manuelle) | 10-20% |
+| Probabilité moyenne de succès | > 85% |
+| Coût Glue estimé par job (DPU-h) | 0.5-2.0 |

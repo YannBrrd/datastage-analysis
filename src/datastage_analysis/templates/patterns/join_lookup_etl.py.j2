@@ -1,0 +1,165 @@
+{# Template for Join/Lookup pattern ETL jobs #}
+"""
+AWS Glue ETL Job: {{ job_name }}
+Pattern: Join/Lookup ETL (Data Enrichment)
+
+Migrated from DataStage: {{ original_job_name }}
+Generated: {{ generation_timestamp }}
+"""
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+from pyspark.sql.functions import broadcast
+
+# Initialize
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME',
+    'S3_MAIN_INPUT_PATH',
+    'S3_LOOKUP_PATH',
+    'S3_OUTPUT_PATH',
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+logger = glueContext.get_logger()
+
+# ============================================================================
+# READ MAIN SOURCE
+# ============================================================================
+
+main_dyf = glueContext.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={
+        "paths": [args['S3_MAIN_INPUT_PATH']],
+        "recurse": True,
+    },
+    format="{{ main_format | default('parquet') }}",
+    transformation_ctx="main_source_ctx"
+)
+
+main_df = main_dyf.toDF()
+logger.info(f"Read {main_df.count()} records from main source")
+
+# ============================================================================
+# READ LOOKUP TABLE(S)
+# ============================================================================
+
+{% for lookup in lookups %}
+# Lookup: {{ lookup.name }}
+{{ lookup.name }}_dyf = glueContext.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={
+        "paths": ["{{ lookup.path }}"],
+    },
+    format="{{ lookup.format | default('parquet') }}",
+    transformation_ctx="{{ lookup.name }}_ctx"
+)
+{{ lookup.name }}_df = {{ lookup.name }}_dyf.toDF()
+logger.info(f"Read {{{ lookup.name }}_df.count()} records for lookup {{ lookup.name }}")
+
+{% if lookup.cache %}
+# Cache lookup table for performance
+{{ lookup.name }}_df.cache()
+{% endif %}
+
+{% endfor %}
+
+# ============================================================================
+# PERFORM JOINS/LOOKUPS
+# ============================================================================
+
+result_df = main_df
+
+{% for lookup in lookups %}
+# {{ lookup.join_type | default('left') | upper }} JOIN with {{ lookup.name }}
+{% if lookup.broadcast %}
+# Using broadcast join (lookup table < 100MB)
+result_df = result_df.join(
+    broadcast({{ lookup.name }}_df),
+    on=[result_df["{{ lookup.main_key }}"] == {{ lookup.name }}_df["{{ lookup.lookup_key }}"]],
+    how="{{ lookup.join_type | default('left') }}"
+)
+{% else %}
+# Standard join
+result_df = result_df.join(
+    {{ lookup.name }}_df,
+    on=[result_df["{{ lookup.main_key }}"] == {{ lookup.name }}_df["{{ lookup.lookup_key }}"]],
+    how="{{ lookup.join_type | default('left') }}"
+)
+{% endif %}
+
+{% if lookup.select_columns %}
+# Select columns from lookup
+result_df = result_df.select(
+    main_df["*"],
+    {% for col in lookup.select_columns %}
+    {{ lookup.name }}_df["{{ col }}"].alias("{{ lookup.name }}_{{ col }}"),
+    {% endfor %}
+)
+{% endif %}
+
+# Drop duplicate key column from lookup
+result_df = result_df.drop({{ lookup.name }}_df["{{ lookup.lookup_key }}"])
+
+{% if lookup.default_values %}
+# Apply defaults for non-matched lookups
+{% for col, default in lookup.default_values.items() %}
+result_df = result_df.withColumn(
+    "{{ col }}",
+    F.coalesce(F.col("{{ col }}"), F.lit({{ default }}))
+)
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+
+# ============================================================================
+# POST-JOIN TRANSFORMATIONS
+# ============================================================================
+
+{% if post_join_transforms %}
+{% for transform in post_join_transforms %}
+{{ transform.code }}
+{% endfor %}
+{% endif %}
+
+# ============================================================================
+# WRITE OUTPUT
+# ============================================================================
+
+output_dyf = DynamicFrame.fromDF(result_df, glueContext, "output_dyf")
+
+glueContext.write_dynamic_frame.from_options(
+    frame=output_dyf,
+    connection_type="s3",
+    connection_options={
+        "path": args['S3_OUTPUT_PATH'],
+        {% if partition_keys %}
+        "partitionKeys": {{ partition_keys | tojson }},
+        {% endif %}
+    },
+    format="{{ output_format | default('parquet') }}",
+    format_options={
+        "compression": "snappy",
+    },
+    transformation_ctx="output_ctx"
+)
+
+logger.info(f"Wrote {result_df.count()} records to output")
+
+# ============================================================================
+# COMPLETE
+# ============================================================================
+
+job.commit()
+logger.info("Job completed successfully")

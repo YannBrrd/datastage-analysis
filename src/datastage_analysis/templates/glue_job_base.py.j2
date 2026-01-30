@@ -1,0 +1,79 @@
+{# Base template for AWS Glue ETL jobs #}
+{# Variables: job_name, job_description, sources, transforms, targets #}
+"""
+AWS Glue ETL Job: {{ job_name }}
+{{ job_description }}
+
+Migrated from DataStage job: {{ original_job_name }}
+Generated: {{ generation_timestamp }}
+Migration Category: {{ migration_category }}
+Estimated Complexity: {{ complexity_score }}/100
+"""
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.types import *
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME',
+{%- for arg in additional_args %}
+    '{{ arg }}',
+{%- endfor %}
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+logger = glueContext.get_logger()
+logger.info(f"Starting Glue job: {args['JOB_NAME']}")
+
+{% if enable_metrics %}
+# Enable Spark metrics
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+{% endif %}
+
+# ============================================================================
+# SOURCE READS
+# ============================================================================
+
+{% for source in sources %}
+{{ source.code }}
+{% endfor %}
+
+# ============================================================================
+# TRANSFORMATIONS
+# ============================================================================
+
+{% for transform in transforms %}
+{{ transform.code }}
+{% endfor %}
+
+# ============================================================================
+# TARGET WRITES
+# ============================================================================
+
+{% for target in targets %}
+{{ target.code }}
+{% endfor %}
+
+# ============================================================================
+# JOB COMPLETION
+# ============================================================================
+
+job.commit()
+logger.info(f"Job {args['JOB_NAME']} completed successfully")
