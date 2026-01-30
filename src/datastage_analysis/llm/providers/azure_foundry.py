@@ -80,7 +80,7 @@ class AzureFoundryClient(LLMClient):
 
     Supports multiple model providers through Azure AI Foundry's unified API.
 
-    Requires: uv install azure-ai-inference
+    Requires: uv pip install azure-ai-inference
 
     Environment variables:
         AZURE_FOUNDRY_ENDPOINT: Model endpoint URL
@@ -132,7 +132,7 @@ class AzureFoundryClient(LLMClient):
             except ImportError:
                 raise ProviderError(
                     "azure-ai-inference package not installed. "
-                    "Run: uv install azure-ai-inference"
+                    "Run: uv pip install azure-ai-inference"
                 )
 
             self._client = ChatCompletionsClient(
