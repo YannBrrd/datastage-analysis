@@ -83,10 +83,18 @@ class MigrationAnalyzer:
         predictions: List[MigrationPrediction] = []
         structures: Dict[str, Dict] = {}
         errors: List[Dict] = []
+        total_files = len(all_files)
 
         for i, dsx_file in enumerate(all_files, 1):
+            # Progress indicator
+            progress_pct = int((i / total_files) * 100)
+            bar_width = 30
+            filled = int(bar_width * i / total_files)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            print(f"\r⏳ [{bar}] {progress_pct:3d}% ({i}/{total_files}) {dsx_file.name[:30]:<30}", end="", flush=True)
+
             if self.verbose:
-                print(f"[{i}/{len(all_files)}] Analyzing: {dsx_file.name}")
+                print(f"\n[{i}/{total_files}] Analyzing: {dsx_file.name}")
 
             try:
                 # Parse DSX file using the parser's internal method
@@ -133,6 +141,9 @@ class MigrationAnalyzer:
                 })
                 if self.verbose:
                     print(f"  ❌ Error: {e}")
+
+        # Clear progress bar and show completion
+        print(f"\r✅ Parsed {total_files} files, found {len(predictions)} jobs" + " " * 40)
 
         # Generate summary
         summary = self._generate_summary(predictions)
