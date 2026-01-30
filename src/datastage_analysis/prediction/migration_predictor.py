@@ -93,6 +93,8 @@ class MigrationPredictor:
         'SequentialFile', 'FileSet', 'Dataset',
         'Filter', 'Sort', 'Copy', 'Funnel',
         'JDBCConnector', 'ODBCConnector',
+        # DataStage internal class names
+        'CSeqFileStage', 'CS3PXStage',
     }
 
     # Stage types that need some manual configuration
@@ -103,6 +105,10 @@ class MigrationPredictor:
         'SQLServerConnector', 'SQLServerConnectorPX',
         'Modify', 'ColumnGenerator', 'SurrogateKeyGenerator',
         'Remove Duplicates', 'Merge',
+        # DataStage internal class names
+        'CTransformerStage', 'CHashedFileStage',
+        'CODBCStage', 'COracleOCIStage', 'CDB2APISTG',
+        'CKafkaConnectorPX',
     }
 
     # Stage types that require significant manual work
@@ -110,6 +116,18 @@ class MigrationPredictor:
         'ChangeCapture', 'ChangeApply', 'Pivot', 'Switch',
         'TeradataConnector', 'TeradataConnectorPX',
         'NetezzaConnector', 'CustomStage',
+        # DataStage internal class names
+        'CCustomStage', 'CXMLStage',
+        'CWebServicePXStage', 'CMQSeriesPXStage',
+    }
+
+    # Metadata/port stages to ignore (not real processing stages)
+    METADATA_STAGES = {
+        'CContainerView', 'CJobDefn', 'CAnnotation',
+        'CTrxInput', 'CTrxOutput',
+        'CCustomInput', 'CCustomOutput',
+        'CSeqInput', 'CSeqOutput',
+        'CHashedInput', 'CHashedOutput',
     }
 
     # Known problematic patterns
@@ -271,7 +289,8 @@ class MigrationPredictor:
         all_known_stages = (
             self.FULLY_SUPPORTED_STAGES |
             self.PARTIALLY_SUPPORTED_STAGES |
-            self.MANUAL_STAGES
+            self.MANUAL_STAGES |
+            self.METADATA_STAGES
         )
         unknown_stage_types = [
             t for t in stage_types
