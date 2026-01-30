@@ -626,6 +626,26 @@ Examples:
         help="Override LLM provider from config"
     )
 
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Estimate costs and preview batches without generating code"
+    )
+
+    parser.add_argument(
+        "--budget",
+        type=float,
+        metavar="DOLLARS",
+        help="Set budget limit for LLM costs (used with --dry-run for warnings)"
+    )
+
+    parser.add_argument(
+        "--report",
+        type=str,
+        metavar="PATH",
+        help="Generate HTML migration report at specified path"
+    )
+
     args = parser.parse_args()
 
     # Run analysis
@@ -659,8 +679,76 @@ Examples:
         auto_pct = summary.get("auto", {}).get("percentage", 0)
         print(f"\n✨ {auto_pct}% of jobs can be automatically migrated to AWS Glue")
 
-    # Code generation
-    if args.generate or args.generate_only:
+    # HTML Report generation
+    if args.report:
+        try:
+            from datastage_analysis.reporting import generate_html_report
+            report_path = generate_html_report(results, output_path=args.report)
+            print(f"\n📊 HTML report generated: {report_path}")
+        except Exception as e:
+            print(f"❌ Failed to generate HTML report: {e}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
+
+    # Code generation (or dry-run)
+    if args.generate or args.generate_only or args.dry_run:
+        # Build cluster info from commonality report
+        cluster_info = _build_cluster_info(results.get("commonality"))
+
+        # Get structures from analysis results
+        structures = results.get("structures", {})
+
+        # Determine which jobs to generate
+        predictions_to_use = results.get("predictions", [])
+        jobs_filter = None
+        if args.generate_only and args.generate_only.lower() != 'all':
+            jobs_filter = [j.strip() for j in args.generate_only.split(',')]
+            predictions_to_use = [p for p in predictions_to_use if p.job_name in jobs_filter]
+
+        # Dry-run mode
+        if args.dry_run:
+            print("\n" + "=" * 60)
+            print("🔍 DRY-RUN: COST ESTIMATION")
+            print("=" * 60)
+
+            try:
+                from datastage_analysis.generation.dry_run import DryRunEstimator, format_dry_run_report
+
+                provider = args.llm_provider or 'anthropic'
+                estimator = DryRunEstimator(
+                    provider=provider,
+                    budget_limit=args.budget
+                )
+
+                dry_result = estimator.estimate(
+                    predictions=predictions_to_use,
+                    cluster_info=cluster_info,
+                    use_batching=not args.no_llm
+                )
+
+                print(format_dry_run_report(dry_result, provider))
+
+                # Export dry-run results if output specified
+                if args.output and args.output.endswith('.json'):
+                    import json
+                    dry_output = {
+                        'dry_run': True,
+                        'estimate': dry_result.to_dict(),
+                        'analysis_summary': results.get("summary", {}),
+                    }
+                    with open(args.output.replace('.json', '_dry_run.json'), 'w') as f:
+                        json.dump(dry_output, f, indent=2)
+                    print(f"\n📄 Dry-run results exported to: {args.output.replace('.json', '_dry_run.json')}")
+
+            except Exception as e:
+                print(f"❌ Dry-run failed: {e}")
+                if args.debug:
+                    import traceback
+                    traceback.print_exc()
+
+            return  # Exit after dry-run
+
         print("\n" + "=" * 60)
         print("🔧 CODE GENERATION")
         print("=" * 60)
@@ -668,10 +756,7 @@ Examples:
         try:
             from datastage_analysis.generation import MigrationGenerator
 
-            # Determine which jobs to generate
-            jobs_filter = None
-            if args.generate_only and args.generate_only.lower() != 'all':
-                jobs_filter = [j.strip() for j in args.generate_only.split(',')]
+            if jobs_filter:
                 print(f"Generating code for {len(jobs_filter)} specified jobs")
 
             # Initialize generator with batch processing enabled
@@ -681,12 +766,6 @@ Examples:
             # Override LLM provider if specified
             if args.llm_provider and use_llm:
                 print(f"Using LLM provider: {args.llm_provider}")
-
-            # Get structures from analysis results
-            structures = results.get("structures", {})
-
-            # Build cluster info from commonality report
-            cluster_info = _build_cluster_info(results.get("commonality"))
 
             if cluster_info and use_llm:
                 n_clustered = sum(1 for v in cluster_info.values()
