@@ -151,7 +151,6 @@ class MigrationAnalyzer:
         # Rank jobs for migration priority
         ranker = MigrationPriorityRanker()
         ranked_jobs = ranker.rank_jobs(predictions)
-        waves = ranker.create_migration_waves(ranked_jobs, wave_size=50)
 
         # Analyze commonalities (duplicates, patterns)
         commonality_report = self.commonality_detector.analyze(structures)
@@ -160,7 +159,6 @@ class MigrationAnalyzer:
             "predictions": predictions,
             "summary": summary,
             "ranked_jobs": ranked_jobs,
-            "migration_waves": waves,
             "commonality": commonality_report,
             "errors": errors,
             "analyzed_at": datetime.now().isoformat(),
@@ -339,15 +337,6 @@ def print_report(results: Dict[str, Any]):
             print(f"   ... and {len(unknown_types) - 15} more types")
         print("   💡 Consider adding these to GLUE_COMPLEXITY mapping for better predictions")
 
-    # Migration waves
-    waves = results.get("migration_waves", [])
-    if waves:
-        print(f"\n📦 MIGRATION WAVES ({len(waves)} waves):")
-        for i, wave in enumerate(waves[:5], 1):
-            print(f"   Wave {i}: {len(wave)} jobs")
-        if len(waves) > 5:
-            print(f"   ... and {len(waves) - 5} more waves")
-
     # Top 10 jobs by priority
     ranked = results.get("ranked_jobs", [])
     if ranked:
@@ -466,7 +455,6 @@ def export_json(results: Dict[str, Any], output_path: str):
         "summary": results.get("summary", {}),
         "predictions": [p.to_dict() for p in results.get("predictions", [])],
         "ranked_jobs": results.get("ranked_jobs", []),
-        "migration_waves": results.get("migration_waves", []),
         "commonality": commonality_dict,
         "errors": results.get("errors", []),
         "analyzed_at": results.get("analyzed_at", ""),
