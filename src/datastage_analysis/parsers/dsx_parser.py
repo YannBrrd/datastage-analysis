@@ -30,7 +30,7 @@ class DataStageJob:
 class DSXParser:
     """Parser for DataStage DSX files."""
 
-    def __init__(self, max_workers: int = 4, max_file_size_mb: int = 500):
+    def __init__(self, max_workers: int = 4, max_file_size_mb: int = 510):
         self.max_workers = max_workers
         self.max_file_size_mb = max_file_size_mb  # Warn for files larger than this
 
