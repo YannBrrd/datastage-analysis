@@ -122,6 +122,13 @@ streamlit run output/app.py
 
 The `analyze_migration.py` script provides instant classification of your DataStage jobs:
 
+| Option | Description |
+|--------|-------------|
+| `-o, --output` | Output file path (CSV or JSON) |
+| `-f, --format` | Output format: console, csv, json |
+| `-v, --verbose` | Show detailed output for each job |
+| `-d, --debug` | Enable debug logging for parsing issues |
+
 ```
 $ python analyze_migration.py ./data
 
@@ -207,13 +214,15 @@ datastage-analysis/
 
 | DataStage Stage | AWS Glue Equivalent | Complexity |
 |-----------------|---------------------|------------|
-| SequentialFile | S3 DynamicFrame | 1/5 |
-| OracleConnector | Glue JDBC Connection | 2/5 |
-| Transformer | ApplyMapping / Map | 2/5 |
+| SequentialFile / CSeqFileStage | S3 DynamicFrame | 1/5 |
+| OracleConnector / COracleOCIStage | Glue JDBC Connection | 2/5 |
+| Transformer / CTransformerStage | ApplyMapping / Map | 2/5 |
 | Join | Join.apply() | 2/5 |
-| Lookup | Broadcast join | 3/5 |
+| Lookup / CHashedFileStage | Broadcast join | 3/5 |
 | Aggregator | groupBy().agg() | 2/5 |
+| CCustomStage | Custom Python logic | 3/5 |
 | ChangeCapture | Glue Bookmarks + Delta | 5/5 |
+| CJS* (Job Sequencer) | Step Functions / Glue Workflows | N/A |
 
 ## 📈 Expected Results
 
@@ -266,11 +275,12 @@ For a typical 9000 job DataStage environment:
 ```
 sentence-transformers  # Local semantic embeddings
 anthropic              # Claude AI API
-scikit-learn          # Clustering algorithms
-jinja2                # Template engine
-pandas / numpy        # Data processing
-streamlit             # Interactive reports
-redis                 # Caching (optional)
+scikit-learn           # Clustering algorithms
+jinja2                 # Template engine
+pandas / numpy         # Data processing
+streamlit              # Interactive reports
+pyyaml                 # Configuration loading
+redis                  # Caching (optional)
 ```
 
 ## 🤝 Contributing
