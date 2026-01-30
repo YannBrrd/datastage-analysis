@@ -80,7 +80,7 @@ class AnthropicClient(LLMClient):
     """
     Anthropic Claude API client.
 
-    Requires the 'anthropic' package: pip install anthropic
+    Requires the 'anthropic' package: uv pip install anthropic
 
     Environment variables:
         ANTHROPIC_API_KEY: API key for authentication
@@ -124,7 +124,7 @@ class AnthropicClient(LLMClient):
                 import anthropic
             except ImportError:
                 raise ProviderError(
-                    "anthropic package not installed. Run: pip install anthropic"
+                    "anthropic package not installed. Run: uv pip install anthropic"
                 )
 
             kwargs = {

@@ -76,7 +76,7 @@ class VertexClient(LLMClient):
     """
     GCP Vertex AI client.
 
-    Requires: pip install google-cloud-aiplatform
+    Requires: uv pip install google-cloud-aiplatform
 
     Authentication uses Application Default Credentials:
     - gcloud auth application-default login
@@ -125,7 +125,7 @@ class VertexClient(LLMClient):
         except ImportError:
             raise ProviderError(
                 "google-cloud-aiplatform package not installed. "
-                "Run: pip install google-cloud-aiplatform"
+                "Run: uv pip install google-cloud-aiplatform"
             )
         except Exception as e:
             raise AuthenticationError(f"Failed to initialize Vertex AI: {e}")
@@ -246,7 +246,7 @@ class VertexClient(LLMClient):
             from anthropic import AnthropicVertex
         except ImportError:
             raise ProviderError(
-                "anthropic package not installed. Run: pip install anthropic[vertex]"
+                "anthropic package not installed. Run: uv pip install anthropic[vertex]"
             )
 
         try:

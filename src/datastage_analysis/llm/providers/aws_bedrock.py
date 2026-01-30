@@ -93,7 +93,7 @@ class BedrockClient(LLMClient):
     """
     AWS Bedrock client.
 
-    Requires boto3: pip install boto3
+    Requires boto3: uv pip install boto3
 
     Authentication uses standard AWS credential chain:
     - Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
@@ -133,7 +133,7 @@ class BedrockClient(LLMClient):
                 from botocore.config import Config
             except ImportError:
                 raise ProviderError(
-                    "boto3 package not installed. Run: pip install boto3"
+                    "boto3 package not installed. Run: uv pip install boto3"
                 )
 
             config = Config(
