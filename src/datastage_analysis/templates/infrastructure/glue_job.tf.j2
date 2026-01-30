@@ -1,0 +1,221 @@
+{# Terraform template for AWS Glue job infrastructure #}
+# ============================================================================
+# AWS Glue Job: {{ job_name }}
+# Migrated from DataStage: {{ original_job_name }}
+# Generated: {{ generation_timestamp }}
+# ============================================================================
+
+# ------------------------------------------------------------------------------
+# Variables
+# ------------------------------------------------------------------------------
+
+variable "environment" {
+  description = "Environment name (dev, staging, prod)"
+  type        = string
+  default     = "dev"
+}
+
+variable "glue_role_arn" {
+  description = "IAM role ARN for Glue jobs"
+  type        = string
+}
+
+variable "script_bucket" {
+  description = "S3 bucket for Glue scripts"
+  type        = string
+}
+
+{% for conn in connections %}
+variable "{{ conn.name }}_password" {
+  description = "Password for {{ conn.name }} connection"
+  type        = string
+  sensitive   = true
+}
+{% endfor %}
+
+# ------------------------------------------------------------------------------
+# Glue Job
+# ------------------------------------------------------------------------------
+
+resource "aws_glue_job" "{{ job_name }}" {
+  name     = "{{ job_name }}-${var.environment}"
+  role_arn = var.glue_role_arn
+
+  command {
+    name            = "{{ job_type | default('glueetl') }}"
+    script_location = "s3://${var.script_bucket}/scripts/{{ job_name }}.py"
+    python_version  = "3"
+  }
+
+  default_arguments = {
+    "--job-language"                     = "python"
+    "--job-bookmark-option"              = "{{ 'job-bookmark-enable' if enable_bookmarks else 'job-bookmark-disable' }}"
+    "--enable-metrics"                   = "{{ 'true' if enable_metrics else 'false' }}"
+    "--enable-spark-ui"                  = "true"
+    "--spark-event-logs-path"            = "s3://${var.script_bucket}/spark-logs/{{ job_name }}/"
+    "--TempDir"                          = "s3://${var.script_bucket}/temp/{{ job_name }}/"
+    "--enable-continuous-cloudwatch-log" = "true"
+    "--enable-glue-datacatalog"          = "true"
+    {% for key, value in default_arguments.items() %}
+    "{{ key }}"                          = "{{ value }}"
+    {% endfor %}
+  }
+
+  glue_version      = "{{ glue_version | default('4.0') }}"
+  worker_type       = "{{ worker_type | default('G.1X') }}"
+  number_of_workers = {{ number_of_workers | default(2) }}
+  timeout           = {{ timeout_minutes | default(60) }}
+  max_retries       = {{ max_retries | default(1) }}
+
+  {% if connections %}
+  connections = [
+    {% for conn in connections %}
+    aws_glue_connection.{{ conn.name }}.name,
+    {% endfor %}
+  ]
+  {% endif %}
+
+  execution_property {
+    max_concurrent_runs = {{ max_concurrent_runs | default(1) }}
+  }
+
+  tags = {
+    Environment      = var.environment
+    MigratedFrom     = "DataStage"
+    OriginalJob      = "{{ original_job_name }}"
+    MigrationDate    = "{{ generation_timestamp }}"
+    ComplexityScore  = "{{ complexity_score }}"
+    ManagedBy        = "Terraform"
+  }
+}
+
+{% if connections %}
+# ------------------------------------------------------------------------------
+# Glue Connections
+# ------------------------------------------------------------------------------
+
+{% for conn in connections %}
+resource "aws_glue_connection" "{{ conn.name }}" {
+  name            = "{{ conn.name }}-${var.environment}"
+  connection_type = "{{ conn.connection_type | default('JDBC') }}"
+
+  connection_properties = {
+    JDBC_CONNECTION_URL = "{{ conn.jdbc_url }}"
+    USERNAME            = "{{ conn.username }}"
+    PASSWORD            = var.{{ conn.name }}_password
+    {% for key, value in conn.additional_options.items() %}
+    {{ key }}           = "{{ value }}"
+    {% endfor %}
+  }
+
+  physical_connection_requirements {
+    availability_zone      = var.availability_zone
+    security_group_id_list = var.security_group_ids
+    subnet_id              = var.subnet_id
+  }
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+{% endfor %}
+{% endif %}
+
+{% if enable_trigger %}
+# ------------------------------------------------------------------------------
+# Glue Trigger (Schedule)
+# ------------------------------------------------------------------------------
+
+resource "aws_glue_trigger" "{{ job_name }}_trigger" {
+  name     = "{{ job_name }}-trigger-${var.environment}"
+  type     = "{{ trigger_type | default('SCHEDULED') }}"
+  {% if trigger_type == 'SCHEDULED' or trigger_type is not defined %}
+  schedule = "{{ schedule_expression | default('cron(0 6 * * ? *)') }}"  # Default: 6 AM UTC daily
+  {% endif %}
+
+  actions {
+    job_name = aws_glue_job.{{ job_name }}.name
+    arguments = {
+      "--job-bookmark-option" = "job-bookmark-enable"
+    }
+  }
+
+  {% if trigger_type == 'SCHEDULED' or trigger_type is not defined %}
+  start_on_creation = {{ start_on_creation | default('false') }}
+  {% endif %}
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+{% endif %}
+
+{% if enable_workflow %}
+# ------------------------------------------------------------------------------
+# Glue Workflow (for job dependencies)
+# ------------------------------------------------------------------------------
+
+resource "aws_glue_workflow" "{{ workflow_name | default(job_name + '_workflow') }}" {
+  name = "{{ workflow_name | default(job_name + '_workflow') }}-${var.environment}"
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+{% endif %}
+
+# ------------------------------------------------------------------------------
+# CloudWatch Alarms
+# ------------------------------------------------------------------------------
+
+resource "aws_cloudwatch_metric_alarm" "{{ job_name }}_failure" {
+  alarm_name          = "{{ job_name }}-failure-${var.environment}"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "glue.driver.aggregate.numFailedTasks"
+  namespace           = "Glue"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Glue job {{ job_name }} has failed tasks"
+
+  dimensions = {
+    JobName = aws_glue_job.{{ job_name }}.name
+    JobRunId = "ALL"
+    Type = "gauge"
+  }
+
+  {% if alarm_sns_topic %}
+  alarm_actions = [var.alarm_sns_topic_arn]
+  {% endif %}
+
+  tags = {
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------------------------
+
+output "glue_job_name" {
+  description = "Name of the created Glue job"
+  value       = aws_glue_job.{{ job_name }}.name
+}
+
+output "glue_job_arn" {
+  description = "ARN of the created Glue job"
+  value       = aws_glue_job.{{ job_name }}.arn
+}
+
+{% if enable_trigger %}
+output "glue_trigger_name" {
+  description = "Name of the Glue trigger"
+  value       = aws_glue_trigger.{{ job_name }}_trigger.name
+}
+{% endif %}

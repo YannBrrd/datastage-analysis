@@ -1,0 +1,142 @@
+{# Template for Aggregation pattern ETL jobs #}
+"""
+AWS Glue ETL Job: {{ job_name }}
+Pattern: Aggregation ETL (Summary/Rollup)
+
+Migrated from DataStage: {{ original_job_name }}
+Generated: {{ generation_timestamp }}
+"""
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+# Initialize
+args = getResolvedOptions(sys.argv, [
+    'JOB_NAME',
+    'S3_INPUT_PATH',
+    'S3_OUTPUT_PATH',
+])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+logger = glueContext.get_logger()
+
+# ============================================================================
+# READ SOURCE
+# ============================================================================
+
+source_dyf = glueContext.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={
+        "paths": [args['S3_INPUT_PATH']],
+        "recurse": True,
+    },
+    format="{{ input_format | default('parquet') }}",
+    transformation_ctx="source_ctx"
+)
+
+source_df = source_dyf.toDF()
+logger.info(f"Read {source_df.count()} records from source")
+
+# ============================================================================
+# PRE-AGGREGATION FILTERS
+# ============================================================================
+
+{% if pre_filters %}
+filtered_df = source_df
+{% for filter in pre_filters %}
+filtered_df = filtered_df.filter(F.expr("{{ filter.condition }}"))
+{% endfor %}
+{% else %}
+filtered_df = source_df
+{% endif %}
+
+# ============================================================================
+# AGGREGATION
+# ============================================================================
+
+# Group by columns
+GROUP_BY_COLS = {{ group_by_columns | tojson }}
+
+# Perform aggregation
+aggregated_df = filtered_df.groupBy(*GROUP_BY_COLS).agg(
+    {% for agg in aggregations %}
+    {{ agg.function }}(F.col("{{ agg.column }}")).alias("{{ agg.alias }}"),
+    {% endfor %}
+)
+
+logger.info(f"Aggregated to {aggregated_df.count()} groups")
+
+{% if post_aggregation_transforms %}
+# ============================================================================
+# POST-AGGREGATION TRANSFORMS
+# ============================================================================
+
+result_df = aggregated_df
+{% for transform in post_aggregation_transforms %}
+{{ transform.code }}
+{% endfor %}
+{% else %}
+result_df = aggregated_df
+{% endif %}
+
+{% if window_functions %}
+# ============================================================================
+# WINDOW FUNCTIONS
+# ============================================================================
+
+{% for window in window_functions %}
+# Window: {{ window.name }}
+window_spec = Window.partitionBy({{ window.partition_by | tojson }})
+{% if window.order_by %}
+window_spec = window_spec.orderBy({{ window.order_by | tojson }})
+{% endif %}
+
+result_df = result_df.withColumn(
+    "{{ window.output_column }}",
+    {{ window.function }}
+)
+{% endfor %}
+{% endif %}
+
+# ============================================================================
+# WRITE OUTPUT
+# ============================================================================
+
+output_dyf = DynamicFrame.fromDF(result_df, glueContext, "output_dyf")
+
+glueContext.write_dynamic_frame.from_options(
+    frame=output_dyf,
+    connection_type="s3",
+    connection_options={
+        "path": args['S3_OUTPUT_PATH'],
+        {% if output_partition_keys %}
+        "partitionKeys": {{ output_partition_keys | tojson }},
+        {% endif %}
+    },
+    format="{{ output_format | default('parquet') }}",
+    format_options={
+        "compression": "snappy",
+    },
+    transformation_ctx="output_ctx"
+)
+
+logger.info(f"Wrote {result_df.count()} aggregated records to output")
+
+# ============================================================================
+# COMPLETE
+# ============================================================================
+
+job.commit()
+logger.info("Aggregation job completed successfully")
