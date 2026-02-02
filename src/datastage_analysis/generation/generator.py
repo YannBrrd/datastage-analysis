@@ -1,8 +1,8 @@
 """
 Migration Generator
 
-Main orchestrator for generating AWS Glue code from DataStage jobs.
-Supports batch processing for similar jobs to optimize LLM usage.
+Main orchestrator for generating migration code from DataStage jobs.
+Supports multiple targets (Glue, SQL) and batch processing for similar jobs.
 """
 
 import logging
@@ -17,6 +17,9 @@ from ..prediction.migration_predictor import MigrationPrediction, MigrationCateg
 from ..llm.optimization import BatchProcessor
 
 logger = logging.getLogger(__name__)
+
+# Valid targets
+VALID_TARGETS = ['glue', 'sql']
 
 
 @dataclass
@@ -120,25 +123,41 @@ class MigrationGenerator:
     """
     Orchestrates migration code generation.
 
-    Uses rule-based generation for AUTO jobs, LLM-assisted for others.
+    Supports multiple targets (Glue, SQL) and uses rule-based generation
+    for AUTO jobs, LLM-assisted for others.
     Supports batch processing for similar jobs to optimize LLM usage.
     """
 
-    def __init__(self, use_llm: bool = True, use_batch_processing: bool = True):
+    def __init__(
+        self,
+        use_llm: bool = True,
+        use_batch_processing: bool = True,
+        target: str = "glue",
+        sql_dialect: Optional[str] = None,
+    ):
         """
         Initialize the migration generator.
 
         Args:
             use_llm: Whether to use LLM for SEMI-AUTO and MANUAL jobs
             use_batch_processing: Whether to use batch processing for similar jobs
+            target: Target platform ('glue' or 'sql')
+            sql_dialect: SQL dialect when target='sql' ('teradata', 'postgresql', etc.)
         """
         self.config = get_config()
         self.use_llm = use_llm and self.config.get('llm', 'enabled', default=True)
         self.use_batch_processing = use_batch_processing and self.use_llm
 
-        # Initialize generators
-        from .rule_based import RuleBasedGenerator
-        self.rule_based = RuleBasedGenerator()
+        # Validate and set target
+        self.target = target.lower() if target else "glue"
+        if self.target not in VALID_TARGETS:
+            logger.warning(f"Unknown target '{target}', defaulting to 'glue'")
+            self.target = "glue"
+
+        self.sql_dialect = sql_dialect or "teradata"
+
+        # Initialize target generator
+        self._init_target_generator()
 
         # Initialize batch processor
         self.batch_processor = BatchProcessor(
@@ -146,7 +165,7 @@ class MigrationGenerator:
             similarity_threshold=0.85
         )
 
-        # Initialize LLM generator if enabled
+        # Initialize LLM generator if enabled (for complex jobs)
         self.llm_generator = None
         if self.use_llm:
             try:
@@ -159,6 +178,41 @@ class MigrationGenerator:
                 logger.warning(f"Failed to initialize LLM generator: {e}")
                 self.use_llm = False
                 self.use_batch_processing = False
+
+    def _init_target_generator(self):
+        """Initialize the target-specific generator."""
+        try:
+            from .targets import get_target_generator
+
+            if self.target == "sql":
+                from .targets.sql import SQLTargetConfig, SQLDialect
+                # Map dialect string to enum
+                try:
+                    dialect_enum = SQLDialect(self.sql_dialect)
+                except ValueError:
+                    dialect_enum = SQLDialect.TERADATA
+
+                config = SQLTargetConfig(dialect=dialect_enum)
+                self.target_generator = get_target_generator('sql', config)
+                logger.info(f"SQL target generator initialized with dialect: {self.sql_dialect}")
+            else:
+                from .targets.glue import GlueTargetConfig
+                config = GlueTargetConfig()
+                self.target_generator = get_target_generator('glue', config)
+                logger.info("Glue target generator initialized")
+
+        except ImportError as e:
+            logger.warning(f"Failed to import target generator: {e}")
+            # Fallback to legacy rule-based generator
+            from .rule_based import RuleBasedGenerator
+            self.rule_based = RuleBasedGenerator()
+            self.target_generator = None
+            logger.info("Using legacy rule-based generator")
+
+        # Keep rule_based for backward compatibility
+        if not hasattr(self, 'rule_based'):
+            from .rule_based import RuleBasedGenerator
+            self.rule_based = RuleBasedGenerator()
 
     def generate(
         self,
@@ -406,12 +460,31 @@ class MigrationGenerator:
         prediction: MigrationPrediction,
         structure: Dict
     ) -> GeneratedJob:
-        """Generate code for AUTO job using rule-based generator."""
+        """Generate code for AUTO job using target generator or rule-based."""
         import time
         start = time.time()
 
         try:
-            result = self.rule_based.generate(prediction, structure)
+            # Use target generator if available
+            if self.target_generator:
+                output = self.target_generator.generate(prediction, structure)
+                # Convert GeneratedOutput to GeneratedJob for backward compatibility
+                result = GeneratedJob(
+                    job_name=output.job_name,
+                    category=output.category,
+                    success=output.success,
+                    glue_script=output.main_script,  # Main script (works for both Glue and SQL)
+                    terraform=output.infrastructure,
+                    unit_tests=output.unit_tests,
+                    documentation=output.documentation,
+                    error=output.error,
+                    generator_type=output.generator_type,
+                    warnings=output.warnings,
+                )
+            else:
+                # Fallback to legacy rule-based generator
+                result = self.rule_based.generate(prediction, structure)
+
             result.generation_time_ms = (time.time() - start) * 1000
             return result
         except Exception as e:
@@ -490,9 +563,23 @@ class MigrationGenerator:
         """Write generated files to disk."""
         base_path = Path(output_dir)
 
+        # Determine output directories based on target
+        if self.target == "sql":
+            scripts_dir = base_path / 'sql'
+            infra_dir = base_path / 'ddl'
+            script_ext = '.sql'
+            infra_ext = '.sql'
+            script_label = "SQL scripts"
+        else:
+            scripts_dir = base_path / 'glue_jobs'
+            infra_dir = base_path / 'terraform'
+            script_ext = '.py'
+            infra_ext = '.tf'
+            script_label = "Glue scripts"
+
         # Create directories
-        (base_path / 'glue_jobs').mkdir(parents=True, exist_ok=True)
-        (base_path / 'terraform').mkdir(parents=True, exist_ok=True)
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        infra_dir.mkdir(parents=True, exist_ok=True)
         (base_path / 'tests').mkdir(parents=True, exist_ok=True)
         (base_path / 'docs').mkdir(parents=True, exist_ok=True)
 
@@ -503,24 +590,29 @@ class MigrationGenerator:
 
             safe_name = self._safe_filename(job_name)
 
+            # Write main script (glue_script field holds main script for all targets)
             if result.glue_script:
-                path = base_path / 'glue_jobs' / f'{safe_name}.py'
+                path = scripts_dir / f'{safe_name}{script_ext}'
                 path.write_text(result.glue_script)
                 written += 1
 
+            # Write infrastructure (terraform/DDL)
             if result.terraform:
-                path = base_path / 'terraform' / f'{safe_name}.tf'
+                path = infra_dir / f'{safe_name}{infra_ext}'
                 path.write_text(result.terraform)
 
+            # Write tests
             if result.unit_tests:
-                path = base_path / 'tests' / f'test_{safe_name}.py'
+                test_ext = '.sql' if self.target == 'sql' else '.py'
+                path = base_path / 'tests' / f'test_{safe_name}{test_ext}'
                 path.write_text(result.unit_tests)
 
+            # Write documentation
             if result.documentation:
                 path = base_path / 'docs' / f'{safe_name}.md'
                 path.write_text(result.documentation)
 
-        print(f"📁 Written {written} Glue scripts to {output_dir}/glue_jobs/")
+        print(f"📁 Written {written} {script_label} to {scripts_dir}/")
 
     def _safe_filename(self, name: str) -> str:
         """Convert job name to safe filename."""

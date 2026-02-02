@@ -1,15 +1,16 @@
-# DataStage to AWS Glue Migration System
+# DataStage Migration System
 
-A high-performance, AI-powered system for analyzing 9000+ DataStage ETL jobs and automating their migration to **AWS Glue**. Uses a hybrid approach combining local analysis with targeted LLM validation to minimize costs while maximizing migration success.
+A high-performance, AI-powered system for analyzing 9000+ DataStage ETL jobs and automating their migration to **AWS Glue** or **SQL databases (Teradata, PostgreSQL, etc.)**. Uses a hybrid approach combining local analysis with targeted LLM validation to minimize costs while maximizing migration success.
 
 ## 🎯 Key Features
 
+- **Multi-Target Support**: Generate code for AWS Glue or SQL databases (Teradata, PostgreSQL)
 - **Predictive Migration**: Automatically classifies jobs as AUTO/SEMI-AUTO/MANUAL
 - **Commonality Detection**: Identifies duplicate/similar jobs to reduce migration effort
 - **Batch Processing**: Groups similar jobs to minimize LLM calls (up to 90% cost reduction)
 - **Multi-Provider LLM**: Support for Anthropic, Azure, AWS Bedrock, GCP Vertex, OpenRouter
 - **Cost Optimization**: Dry-run mode for cost estimation before execution
-- **Code Generation**: Generates AWS Glue Python scripts, Terraform, unit tests, and docs
+- **Code Generation**: Generates Glue/SQL scripts, Terraform/DDL, unit tests, and docs
 - **HTML Reports**: Interactive migration reports with charts and recommendations
 - **High Automation**: 65-75% of jobs can be migrated automatically
 - **Multi-format Support**: Handles .dsx, .dsx.gz, .xml, .xml.gz files
@@ -163,8 +164,11 @@ python analyze_migration.py ./data --debug
 ### Code Generation
 
 ```bash
-# Analyze and generate code for all jobs
+# Analyze and generate AWS Glue code (default)
 python analyze_migration.py ./data --generate
+
+# Generate SQL/Teradata scripts instead of Glue
+python analyze_migration.py ./data --generate --target sql --sql-dialect teradata
 
 # Generate for specific jobs
 python analyze_migration.py ./data --generate-only "JOB1,JOB2,JOB3"
@@ -174,6 +178,22 @@ python analyze_migration.py ./data --generate --no-llm
 
 # Use specific LLM provider
 python analyze_migration.py ./data --generate --llm-provider azure
+```
+
+### Multi-Target Generation
+
+```bash
+# AWS Glue (default)
+python analyze_migration.py ./data --generate --target glue
+
+# SQL/Teradata
+python analyze_migration.py ./data --generate --target sql --sql-dialect teradata
+
+# SQL/PostgreSQL
+python analyze_migration.py ./data --generate --target sql --sql-dialect postgresql
+
+# SQL/Oracle
+python analyze_migration.py ./data --generate --target sql --sql-dialect oracle
 ```
 
 ### Dry-Run Mode (Cost Estimation)
@@ -207,9 +227,11 @@ python analyze_migration.py ./data --report report.html --generate
 | `-f, --format` | Output format: console, csv, json |
 | `-v, --verbose` | Show detailed output for each job |
 | `-d, --debug` | Enable debug logging |
-| `--generate` | Generate AWS Glue code after analysis |
+| `--generate` | Generate migration code after analysis |
 | `--generate-only JOBS` | Generate for specific jobs (comma-separated) |
 | `--output-dir DIR` | Output directory for generated code |
+| `--target` | Target platform: glue, sql (default: glue) |
+| `--sql-dialect` | SQL dialect: teradata, postgresql, oracle, sqlserver, generic |
 | `--no-llm` | Disable LLM, use rule-based only |
 | `--llm-provider` | LLM provider: anthropic, azure, azure_foundry, aws, gcp, openrouter |
 | `--dry-run` | Estimate costs without generating |
@@ -372,15 +394,37 @@ The HTML report includes:
 
 ## 🛠️ Generated Outputs
 
+### AWS Glue Target (--target glue)
+
 ```
 generated/
-├── glue_scripts/
-│   ├── job_name.py           # AWS Glue Python script
-│   ├── job_name_test.py      # Unit tests
+├── glue_jobs/
+│   ├── job_name.py           # AWS Glue PySpark script
 │   └── ...
 ├── terraform/
-│   ├── main.tf               # Glue job definitions
-│   ├── variables.tf          # Configurable variables
+│   ├── job_name.tf           # Glue job Terraform config
+│   └── ...
+├── tests/
+│   ├── test_job_name.py      # pytest unit tests
+│   └── ...
+├── docs/
+│   ├── job_name.md           # Per-job documentation
+│   └── ...
+└── generation_report.json    # Generation summary
+```
+
+### SQL Target (--target sql)
+
+```
+generated/
+├── sql/
+│   ├── job_name.sql          # SQL script (BTEQ for Teradata)
+│   └── ...
+├── ddl/
+│   ├── job_name.sql          # DDL (CREATE TABLE, GRANT)
+│   └── ...
+├── tests/
+│   ├── test_job_name.sql     # Validation queries
 │   └── ...
 ├── docs/
 │   ├── job_name.md           # Per-job documentation
@@ -406,7 +450,10 @@ datastage-analysis/
 │   │   ├── generator.py              # Main generator
 │   │   ├── dry_run.py                # Cost estimation
 │   │   ├── rule_based/               # Template generation
-│   │   └── llm_based/                # LLM-assisted generation
+│   │   ├── llm_based/                # LLM-assisted generation
+│   │   └── targets/                  # Target-specific generators
+│   │       ├── glue/                 # AWS Glue target
+│   │       └── sql/                  # SQL/Teradata target
 │   ├── llm/
 │   │   ├── client.py                 # Base LLM interface
 │   │   ├── factory.py                # Provider factory
@@ -431,7 +478,9 @@ datastage-analysis/
 └── generated/                        # Output directory
 ```
 
-## 🔧 AWS Glue Mapping
+## 🔧 Target Mappings
+
+### AWS Glue Mapping
 
 | DataStage Stage | AWS Glue Equivalent | Complexity |
 |-----------------|---------------------|------------|
@@ -443,6 +492,46 @@ datastage-analysis/
 | Aggregator | groupBy().agg() | 2/5 |
 | CCustomStage | Custom Python logic | 3/5 |
 | ChangeCapture | Glue Bookmarks + Delta | 5/5 |
+
+### SQL/Teradata Mapping
+
+| DataStage Stage | SQL Equivalent | Notes |
+|-----------------|----------------|-------|
+| SequentialFile | Staging table + BTEQ load | Use TPT for high-volume |
+| OracleConnector | SELECT/INSERT | Direct table access |
+| TeradataConnector | SELECT/INSERT | Native Teradata SQL |
+| Transformer | SQL expressions | Column derivations |
+| Join | JOIN clause | INNER/LEFT/RIGHT JOIN |
+| Lookup | LEFT JOIN | Lookup as join operation |
+| Aggregator | GROUP BY + aggregates | SUM, COUNT, AVG, etc. |
+| Filter | WHERE clause | Filter conditions |
+| Sort | ORDER BY | Sorting |
+| RemoveDuplicates | DISTINCT / QUALIFY | ROW_NUMBER for dedup |
+
+### Teradata-Specific Features
+
+```sql
+-- MULTISET TABLE (allows duplicates, better performance)
+CREATE MULTISET TABLE my_table (
+    id INTEGER NOT NULL,
+    name VARCHAR(100)
+)
+PRIMARY INDEX (id);
+
+-- MERGE for upsert patterns
+MERGE INTO target_table AS tgt
+USING source_query AS src
+ON tgt.key = src.key
+WHEN MATCHED THEN UPDATE SET ...
+WHEN NOT MATCHED THEN INSERT ...;
+
+-- BTEQ batch processing
+.LOGON tdpid/user,password
+DATABASE mydb;
+-- SQL statements here
+.LOGOFF
+.QUIT
+```
 
 ## 📈 Expected Results
 
