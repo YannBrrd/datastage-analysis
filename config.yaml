@@ -139,6 +139,9 @@ generation:
   # Output directory for generated code
   output_dir: "./generated"
 
+  # Target platform: glue, sql
+  target: "glue"
+
   # What to generate
   outputs:
     glue_scripts: true
@@ -163,3 +166,29 @@ generation:
   validation:
     syntax_check: true
     import_check: true
+
+# ===========================================
+# SQL Target Configuration
+# ===========================================
+sql:
+  # SQL dialect: teradata, postgresql, oracle, sqlserver, generic
+  dialect: "teradata"
+
+  # Output mode
+  generate_stored_procedures: false  # Simple scripts by default
+  generate_batch_scripts: true       # BTEQ/TPT for batch processing
+
+  # Infrastructure generation
+  generate_ddl: true                 # CREATE TABLE, etc.
+  generate_grants: true              # User/role grants
+  generate_schemas: true             # CREATE SCHEMA/DATABASE
+
+  # Teradata-specific options
+  teradata:
+    use_multiset: true          # MULTISET TABLE (vs SET)
+    use_primary_index: true     # Generate PRIMARY INDEX
+    use_bteq: true              # Use BTEQ for batch scripts
+    use_tpt: false              # Use TPT for high-volume loads
+    fallback: false             # FALLBACK option
+    journal: false              # JOURNAL option
+    default_database: "DBC"     # Default database

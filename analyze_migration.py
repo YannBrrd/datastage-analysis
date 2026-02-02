@@ -646,10 +646,26 @@ Examples:
         help="Generate HTML migration report at specified path"
     )
 
+    # Target selection
+    parser.add_argument(
+        "--target",
+        choices=["glue", "sql"],
+        default="glue",
+        help="Target platform for code generation (default: glue)"
+    )
+
+    parser.add_argument(
+        "--sql-dialect",
+        choices=["teradata", "postgresql", "oracle", "sqlserver", "generic"],
+        default="teradata",
+        help="SQL dialect when --target=sql (default: teradata)"
+    )
+
     args = parser.parse_args()
 
     # Run analysis
-    print(f"\n🔍 DataStage to AWS Glue Migration Analyzer")
+    target_name = "AWS Glue" if args.target == "glue" else f"SQL ({args.sql_dialect.title()})"
+    print(f"\n🔍 DataStage to {target_name} Migration Analyzer")
     print(f"   Analyzing: {args.directory}")
     print()
 
@@ -750,7 +766,7 @@ Examples:
             return  # Exit after dry-run
 
         print("\n" + "=" * 60)
-        print("🔧 CODE GENERATION")
+        print(f"🔧 CODE GENERATION ({target_name})")
         print("=" * 60)
 
         try:
@@ -761,11 +777,18 @@ Examples:
 
             # Initialize generator with batch processing enabled
             use_llm = not args.no_llm
-            generator = MigrationGenerator(use_llm=use_llm, use_batch_processing=use_llm)
+            generator = MigrationGenerator(
+                use_llm=use_llm,
+                use_batch_processing=use_llm,
+                target=args.target,
+                sql_dialect=args.sql_dialect if args.target == "sql" else None,
+            )
 
             # Override LLM provider if specified
             if args.llm_provider and use_llm:
                 print(f"Using LLM provider: {args.llm_provider}")
+
+            print(f"🎯 Target: {target_name}")
 
             if cluster_info and use_llm:
                 n_clustered = sum(1 for v in cluster_info.values()
@@ -784,6 +807,7 @@ Examples:
             # Print generation summary
             gen_summary = gen_results.get_summary()
             print(f"\n📊 Generation Summary:")
+            print(f"   Target: {target_name}")
             print(f"   Total: {gen_summary['total_jobs']}")
             print(f"   Success: {gen_summary['successful_jobs']} ({gen_summary['success_rate']}%)")
             print(f"   Failed: {gen_summary['failed_jobs']}")
