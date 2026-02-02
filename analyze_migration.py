@@ -826,7 +826,7 @@ Examples:
 
         except ImportError as e:
             print(f"❌ Generation module not available: {e}")
-            print("   Install dependencies: pip install jinja2 anthropic")
+            print("   Install dependencies: uv pip install jinja2 anthropic")
         except Exception as e:
             print(f"❌ Generation failed: {e}")
             if args.debug:
